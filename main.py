@@ -1,9 +1,9 @@
 import os
 import json
-import requests
 import re
+import requests
 from flask import Flask, request, jsonify
-import google.generativeai as genai
+from google import genai
 from personality import PERSONALITY
 
 app = Flask(__name__)
@@ -29,8 +29,7 @@ def load_config():
 CONFIG = load_config()
 
 # Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-pro')
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 def send_message(chat_id, text):
     """Send message to Telegram chat"""
@@ -45,8 +44,16 @@ def send_message(chat_id, text):
 def generate_response(user_input):
     """Generate response using Gemini API"""
     prompt = PERSONALITY + "\n\nUser message:\n" + user_input
-    response = model.generate_content(prompt)
-    return response.text
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
+        return response.text
+    except Exception as e:
+        print(f"Error generating response: {str(e)}")
+        return "Вибачте, виникла помилка при генерації відповіді."
 
 def should_respond(text):
     """Check if the message contains keywords that should trigger a response"""
