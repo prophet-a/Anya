@@ -467,7 +467,7 @@ def webhook():
                     # Send typing action and add random delay (1-3 seconds)
                     send_typing_action(chat_id)
                     import time
-                    time.sleep(random.uniform(1, 3))
+                    time.sleep(random.uniform(2, 6))
                     
                     send_message(chat_id, response_text)
                     
