@@ -35,7 +35,8 @@
     "response_delay_seconds": 0.5,
     "commands": {
       "/start": "Здарова бандіти",
-      "/help": "Який хелп, чел? Просто пиши — я тут"
+      "/help": "Який хелп, чел? Просто пиши — я тут",
+      "/schedule": "Керуй запланованими повідомленнями через /schedule status|on|off"
     }
   },
   "context_settings": {
@@ -50,6 +51,14 @@
     "auto_join_session": true,
     "end_session_commands": ["/end", "бувай", "допобачення", "дякую", "всьо", "всьо давай", "без баб", "набереш"],
     "auto_reply_to_session_participants": true
+  },
+  "scheduled_messages": {
+    "enabled": true,
+    "min_hours_between_messages": 4,
+    "max_hours_between_messages": 12,
+    "max_messages_per_day": 3,
+    "active_session_cooldown_minutes": 30,
+    "check_interval_minutes": 15
   },
   "language": {
     "primary": "uk",

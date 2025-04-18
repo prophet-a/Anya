@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify
 from google import genai
 from personality import PERSONALITY
 from context_manager import ContextManager
+from scheduled_messages import ScheduledMessenger
 
 app = Flask(__name__)
 
@@ -39,6 +40,34 @@ context_manager = ContextManager(
     memory_file=context_settings.get("memory_file", "memory.json"),
     session_timeout_seconds=group_settings.get("session_timeout_seconds", 300)
 )
+
+# Initialize scheduled messenger if enabled
+scheduled_messages_config = CONFIG.get("scheduled_messages", {})
+if scheduled_messages_config.get("enabled", False):
+    scheduled_messenger = ScheduledMessenger(
+        telegram_token=TELEGRAM_BOT_TOKEN,
+        gemini_api_key=GEMINI_API_KEY,
+        memory_file=context_settings.get("memory_file", "memory.json"),
+        config_file="config.json"
+    )
+    
+    # Override settings from config if specified
+    if "min_hours_between_messages" in scheduled_messages_config:
+        scheduled_messenger.min_hours_between_messages = scheduled_messages_config["min_hours_between_messages"]
+    if "max_hours_between_messages" in scheduled_messages_config:
+        scheduled_messenger.max_hours_between_messages = scheduled_messages_config["max_hours_between_messages"]
+    if "max_messages_per_day" in scheduled_messages_config:
+        scheduled_messenger.max_messages_per_day = scheduled_messages_config["max_messages_per_day"]
+    if "active_session_cooldown_minutes" in scheduled_messages_config:
+        scheduled_messenger.active_session_cooldown_minutes = scheduled_messages_config["active_session_cooldown_minutes"]
+    
+    # Start the scheduler
+    check_interval = scheduled_messages_config.get("check_interval_minutes", 15)
+    scheduled_messenger.start_scheduler(check_interval_minutes=check_interval)
+    print(f"Scheduled messages enabled with check interval of {check_interval} minutes")
+else:
+    scheduled_messenger = None
+    print("Scheduled messages disabled")
 
 # Configure Gemini
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -289,6 +318,63 @@ def handle_memory_command(chat_id, command_text):
     else:
         return f"❌ Шо за '{action}'? Не знаю такого. Спробуй info, add або clear"
 
+def handle_schedule_command(chat_id, command_text):
+    """Handle commands for scheduled messages"""
+    global scheduled_messenger
+    
+    parts = command_text.split(' ', 2)  # Split into maximum 3 parts
+    
+    if len(parts) < 2:
+        return "Як юзати: /schedule <дія>\nМожеш обрати: status, on, off"
+    
+    action = parts[1].lower()
+    
+    if action == "status":
+        # Check status of scheduled messages
+        if scheduled_messenger is None:
+            return "❌ Заплановані повідомлення вимкнені глобально в конфігурації"
+        
+        chat_id_str = str(chat_id)
+        in_list = chat_id_str in scheduled_messenger.chats_to_message
+        is_active = in_list and scheduled_messenger.chats_to_message[chat_id_str].get("active", False)
+        
+        if is_active:
+            return "✅ Заплановані повідомлення увімкнені для цього чату"
+        elif in_list:
+            return "❌ Заплановані повідомлення вимкнені для цього чату, але чат зареєстрований"
+        else:
+            return "❌ Чат не зареєстрований для отримання запланованих повідомлень"
+    
+    elif action == "on":
+        # Enable scheduled messages for this chat
+        if scheduled_messenger is None:
+            return "❌ Неможливо увімкнути: заплановані повідомлення вимкнені глобально в конфігурації"
+        
+        chat_id_str = str(chat_id)
+        chat_type = "unknown"  # We don't know the type from this command handler
+        
+        if chat_id_str in scheduled_messenger.chats_to_message:
+            scheduled_messenger.chats_to_message[chat_id_str]["active"] = True
+        else:
+            scheduled_messenger.register_chat(chat_id, chat_type)
+        
+        return "✅ Заплановані повідомлення увімкнені для цього чату"
+    
+    elif action == "off":
+        # Disable scheduled messages for this chat
+        if scheduled_messenger is None:
+            return "❓ Заплановані повідомлення вже вимкнені глобально"
+        
+        chat_id_str = str(chat_id)
+        if chat_id_str in scheduled_messenger.chats_to_message:
+            scheduled_messenger.chats_to_message[chat_id_str]["active"] = False
+            return "✅ Заплановані повідомлення вимкнені для цього чату"
+        else:
+            return "❓ Цей чат і так не отримує заплановані повідомлення"
+    
+    else:
+        return f"❌ Шо за '{action}'? Не знаю такого. Спробуй status, on або off"
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming webhook from Telegram"""
@@ -304,6 +390,14 @@ def webhook():
         # Check if message is in a group
         is_group = data['message']['chat']['type'] in ['group', 'supergroup']
         
+        # Update scheduled message activity tracking if enabled
+        if scheduled_messenger:
+            # Register this chat for potential scheduled messages
+            chat_type = data['message']['chat']['type']
+            scheduled_messenger.register_chat(chat_id, chat_type)
+            # Update activity timestamp to prevent scheduled messages during active conversation
+            scheduled_messenger.update_chat_activity(chat_id)
+        
         # Add user message to context
         context_manager.add_message(chat_id, user_id, username, user_input, is_bot=False, is_group=is_group)
         
@@ -315,6 +409,13 @@ def webhook():
             # Handle memory commands
             if user_input.startswith('/memory'):
                 response = handle_memory_command(chat_id, user_input)
+                send_message(chat_id, response)
+                context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
+                return jsonify({"status": "ok"})
+            
+            # Handle scheduled message commands
+            if user_input.startswith('/schedule'):
+                response = handle_schedule_command(chat_id, user_input)
                 send_message(chat_id, response)
                 context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
                 return jsonify({"status": "ok"})
