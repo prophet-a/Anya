@@ -32,7 +32,6 @@
   "response_settings": {
     "respond_to_direct_messages": true,
     "respond_in_groups": true,
-    "response_delay_seconds": 0.5,
     "commands": {
       "/start": "Здарова бандіти",
       "/help": "Який хелп, чел? Просто пиши — я тут",
@@ -41,7 +40,7 @@
   },
   "context_settings": {
     "enabled": true,
-    "max_messages": 200,
+    "max_messages": 400,
     "memory_enabled": true,
     "memory_file": "memory.json"
   },
@@ -49,7 +48,7 @@
     "session_enabled": true,
     "session_timeout_seconds": 300,
     "auto_join_session": true,
-    "end_session_commands": ["/end", "бувай", "допобачення", "дякую", "всьо", "всьо давай", "без баб", "набереш"],
+    "end_session_commands": ["/end", "бувай", "допобачення", "всьо давай", "без баб", "набереш"],
     "auto_reply_to_session_participants": true
   },
   "scheduled_messages": {

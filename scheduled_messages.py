@@ -206,6 +206,21 @@ class ScheduledMessenger:
     
     def send_message(self, chat_id, text):
         """Send message to Telegram chat"""
+        # First send typing action to show "Анна печатает..."
+        typing_url = f"https://api.telegram.org/bot{self.telegram_token}/sendChatAction"
+        typing_payload = {
+            "chat_id": chat_id,
+            "action": "typing"
+        }
+        try:
+            requests.post(typing_url, json=typing_payload)
+            
+            # Add random delay between 1-3 seconds to simulate typing
+            time.sleep(random.uniform(1, 3))
+        except Exception as e:
+            print(f"Error sending typing action: {str(e)}")
+        
+        # Now send the actual message
         url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
         payload = {
             "chat_id": chat_id,

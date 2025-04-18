@@ -2,6 +2,7 @@ import os
 import json
 import re
 import requests
+import random
 from flask import Flask, request, jsonify
 from google import genai
 from personality import PERSONALITY
@@ -79,6 +80,16 @@ def send_message(chat_id, text):
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "Markdown"
+    }
+    response = requests.post(url, json=payload)
+    return response.json()
+
+def send_typing_action(chat_id):
+    """Send typing action to Telegram chat to show 'Анна печатает...'"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendChatAction"
+    payload = {
+        "chat_id": chat_id,
+        "action": "typing"
     }
     response = requests.post(url, json=payload)
     return response.json()
@@ -450,14 +461,13 @@ def webhook():
                         # Update existing session
                         context_manager.update_session(chat_id, user_id, username)
                     
-                    # Generate and send response
+                    # Generate response
                     response_text = generate_response(user_input, chat_id)
                     
-                    # Add a small delay if configured
-                    delay = CONFIG["response_settings"].get("response_delay_seconds", 0)
-                    if delay > 0:
-                        import time
-                        time.sleep(delay)
+                    # Send typing action and add random delay (1-3 seconds)
+                    send_typing_action(chat_id)
+                    import time
+                    time.sleep(random.uniform(1, 3))
                     
                     send_message(chat_id, response_text)
                     
@@ -474,21 +484,20 @@ def webhook():
                     # Check if this is a command to end the session
                     if is_session_end_command(user_input):
                         context_manager.end_session(chat_id)
-                        response_text = "Ну все, наговорились) Бувай-бувай 👋 Якшо шо — пінгуй"
+                        response_text = "давай, пінганеш"
                         send_message(chat_id, response_text)
                         context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
                         return jsonify({"status": "ok"})
                     
                     # Auto reply to session participants if enabled
                     if group_settings.get("auto_reply_to_session_participants", True):
-                        # Generate and send response
+                        # Generate response
                         response_text = generate_response(user_input, chat_id)
                         
-                        # Add a small delay if configured
-                        delay = CONFIG["response_settings"].get("response_delay_seconds", 0)
-                        if delay > 0:
-                            import time
-                            time.sleep(delay)
+                        # Send typing action and add random delay (1-3 seconds)
+                        send_typing_action(chat_id)
+                        import time
+                        time.sleep(random.uniform(1, 3))
                         
                         send_message(chat_id, response_text)
                         
@@ -508,14 +517,13 @@ def webhook():
             # If not a group chat or sessions disabled, check if should respond
             if not is_group or not group_settings.get("session_enabled", True):
                 if should_respond(user_input):
-                    # Generate and send response
+                    # Generate response
                     response_text = generate_response(user_input, chat_id)
                     
-                    # Add a small delay if configured
-                    delay = CONFIG["response_settings"].get("response_delay_seconds", 0)
-                    if delay > 0:
-                        import time
-                        time.sleep(delay)
+                    # Send typing action and add random delay (1-3 seconds)
+                    send_typing_action(chat_id)
+                    import time
+                    time.sleep(random.uniform(1, 3))
                     
                     send_message(chat_id, response_text)
                     
