@@ -8,7 +8,7 @@ class ContextManager:
     """
     Manages conversation context and long-term memory for the chatbot
     """
-    def __init__(self, max_messages=200, memory_file="memory.json", session_timeout_seconds=300):
+    def __init__(self, max_messages=400, memory_file="memory.json", session_timeout_seconds=300):
         self.max_messages = max_messages
         self.memory_file = memory_file
         self.conversations = defaultdict(list)
