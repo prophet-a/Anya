@@ -1,0 +1,45 @@
+{
+  "bot_name": "Анна",
+  "keywords": [
+    "Анна",
+    "Анно",
+    "Аню",
+    "Ань",
+    "Anna",
+    "Анночка",
+    "Анночко",
+    "Аннушка",
+    "Аннуся",
+    "Анка",
+    "Анюта",
+    "Аня",
+    "Ання",
+    "Ана",
+    "Анн",
+    "Аннa"
+  ],
+  "trigger_detection": {
+    "enabled": true,
+    "case_sensitive": false,
+    "whole_word_only": true,
+    "must_be_at_beginning": false,
+    "ignored_phrases": [
+      "моя подруга анна",
+      "мою подругу анна",
+      "знайома анна"
+    ]
+  },
+  "response_settings": {
+    "respond_to_direct_messages": true,
+    "respond_in_groups": true,
+    "response_delay_seconds": 0.5,
+    "commands": {
+      "/start": "Привіт! Я Анна, ваш віртуальний помічник. Чим можу допомогти?",
+      "/help": "Я можу відповідати на ваші запитання та допомагати з інформацією. Просто напишіть своє питання, звертаючись до мене за іменем."
+    }
+  },
+  "language": {
+    "primary": "uk",
+    "fallback": "en"
+  }
+} 
