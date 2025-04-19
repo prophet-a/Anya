@@ -108,8 +108,42 @@ MESSAGE_BATCH_TIMEOUT = 2  # seconds to wait for more messages
 # Track token usage
 token_usage = {
     "traditional": 0,
-    "summarized": 0
+    "summarized": 0,
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "last_check_time": datetime.now().isoformat()
 }
+
+# File to store token usage
+TOKEN_USAGE_FILE = "token_usage.json"
+
+# Load existing token usage statistics if available
+load_token_usage()
+
+def save_token_usage():
+    """Save token usage statistics to a file"""
+    try:
+        with open(TOKEN_USAGE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(token_usage, f, ensure_ascii=False, indent=2)
+        print(f"[SERVER LOG] Token usage saved to {TOKEN_USAGE_FILE}")
+    except Exception as e:
+        print(f"[SERVER LOG] Error saving token usage: {str(e)}")
+
+def load_token_usage():
+    """Load token usage statistics from a file if it exists"""
+    global token_usage
+    try:
+        if os.path.exists(TOKEN_USAGE_FILE):
+            with open(TOKEN_USAGE_FILE, 'r', encoding='utf-8') as f:
+                loaded_usage = json.load(f)
+                # Update with loaded values but keep current last_check_time
+                for key, value in loaded_usage.items():
+                    if key != "last_check_time":
+                        token_usage[key] = value
+                print(f"[SERVER LOG] Token usage loaded from {TOKEN_USAGE_FILE}")
+    except Exception as e:
+        print(f"[SERVER LOG] Error loading token usage: {str(e)}")
 
 def log_token_usage(text, usage_type="traditional"):
     """Log approximate token usage for monitoring"""
@@ -118,19 +152,55 @@ def log_token_usage(text, usage_type="traditional"):
     # Rough approximation: 1 token ~ 4 characters
     estimated_tokens = len(text) // 4
     
+    # Update appropriate counters
     token_usage[usage_type] += estimated_tokens
+    
+    # Also update total
+    token_usage["total"] += estimated_tokens
     
     # Periodically log usage stats
     if sum(token_usage.values()) % 1000 < 10:  # Log roughly every 1000 tokens
-        print(f"Token usage stats: {token_usage}")
+        print(f"[SERVER LOG] Token usage stats: {token_usage}")
         
         if token_usage["traditional"] > 0 and token_usage["summarized"] > 0:
             traditional_size = token_usage["traditional"]
             summarized_size = token_usage["summarized"]
             savings = (traditional_size - summarized_size) / traditional_size * 100
-            print(f"Estimated summary savings: {savings:.2f}%")
-    
+            print(f"[SERVER LOG] Estimated summary savings: {savings:.2f}%")
+        
+        # Save token usage to file after updating
+        save_token_usage()
+            
     return estimated_tokens
+
+def check_token_usage():
+    """Periodically check and log token usage"""
+    global token_usage
+    
+    now = datetime.now()
+    last_check = datetime.fromisoformat(token_usage["last_check_time"])
+    
+    # Check if an hour has passed since the last check
+    if (now - last_check).total_seconds() >= 3600:  # 3600 seconds = 1 hour
+        print("\n[SERVER LOG] --- HOURLY TOKEN USAGE REPORT ---")
+        print(f"[SERVER LOG] Total tokens used: {token_usage['total']}")
+        print(f"[SERVER LOG] Input tokens: {token_usage['input']}")
+        print(f"[SERVER LOG] Output tokens: {token_usage['output']}")
+        print(f"[SERVER LOG] Traditional approach: {token_usage['traditional']}")
+        print(f"[SERVER LOG] Summarized approach: {token_usage['summarized']}")
+        
+        if token_usage["traditional"] > 0 and token_usage["summarized"] > 0:
+            savings = (token_usage["traditional"] - token_usage["summarized"]) / token_usage["traditional"] * 100
+            print(f"[SERVER LOG] Summary savings: {savings:.2f}%")
+        
+        print(f"[SERVER LOG] Hourly rate: {token_usage['total'] / max(1, (now - last_check).total_seconds() / 3600):.2f} tokens/hour")
+        print("[SERVER LOG] -------------------------------\n")
+        
+        # Update the last check time
+        token_usage["last_check_time"] = now.isoformat()
+        
+        # Save token usage stats to file
+        save_token_usage()
 
 def send_message(chat_id, text):
     """Send message to Telegram chat"""
@@ -190,12 +260,20 @@ def generate_user_impression(username, message_count, message_sample, existing_i
     # Final instruction
     prompt += "Напиши своє оновлене враження про цю людину з твоєї перспективи, враховуючи те, що ти знаєш про неї. Опиши, як ти її сприймаєш:"
     
+    # Log input tokens for impression generation
+    input_tokens = log_token_usage(prompt, "input")
+    print(f"[SERVER LOG] Impression request tokens: {input_tokens}")
+    
     try:
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=prompt
         )
         impression = response.text.strip()
+        
+        # Log output tokens for impression generation
+        output_tokens = log_token_usage(impression, "output")
+        print(f"[SERVER LOG] Impression response tokens: {output_tokens}")
         
         # Clean up any extra formatting
         if impression.startswith('"') and impression.endswith('"'):
@@ -281,6 +359,9 @@ def get_memory_context(chat_id):
 
 def generate_response(user_input, chat_id):
     """Generate response using Gemini API with conversation summarization"""
+    # Check for token usage first
+    check_token_usage()
+    
     # Check if summarization is enabled
     if context_cache.enabled and context_cache.summarization_enabled:
         # Check if we need to create or update summary
@@ -345,11 +426,19 @@ def generate_response(user_input, chat_id):
     if summary:
         log_token_usage(actual_prompt, "summarized")
     
+    # Log input tokens specifically (to server log only)
+    input_tokens = log_token_usage(actual_prompt, "input")
+    print(f"[SERVER LOG] Request tokens: {input_tokens}")
+    
     try:
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=actual_prompt
         )
+        
+        # Log output tokens (to server log only)
+        output_tokens = log_token_usage(response.text, "output")
+        print(f"[SERVER LOG] Response tokens: {output_tokens}")
         
         return response.text
     except Exception as e:
@@ -634,6 +723,10 @@ def generate_conversation_summary(chat_id):
     {messages}
     """
     
+    # Log input tokens for summary generation
+    input_tokens = log_token_usage(summary_prompt, "input")
+    print(f"[SERVER LOG] Summary request tokens: {input_tokens}")
+    
     try:
         response = client.models.generate_content(
             model="gemini-2.0-flash",
@@ -641,6 +734,10 @@ def generate_conversation_summary(chat_id):
         )
         
         summary = response.text.strip()
+        
+        # Log output tokens for summary generation
+        output_tokens = log_token_usage(summary, "output")
+        print(f"[SERVER LOG] Summary response tokens: {output_tokens}")
         
         # Save the summary to memory
         context_cache.save_conversation_summary(chat_id, summary)
@@ -654,7 +751,17 @@ def generate_conversation_summary(chat_id):
 def webhook():
     """Handle incoming webhook from Telegram"""
     global message_batches
+    
+    # Check token usage regularly
+    check_token_usage()
+    
     data = request.get_json()
+    
+    # Debugging: Log the incoming webhook data
+    print(f"Webhook received: {data}")
+    
+    # Get the update_id
+    update_id = data.get('update_id')
     
     # Check if this is a message update
     if 'message' in data and 'text' in data['message']:
