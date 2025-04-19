@@ -857,16 +857,184 @@ def handle_global_memory_command(chat_id, command_text):
     
     return "Невідома команда. Використання: /global_memory [users|profile|thresholds]"
 
+def should_send_followup_message(chat_id, user_id, previous_response):
+    """
+    Analyze if a follow-up message would be appropriate based on context and previous response.
+    Returns (should_send: bool, delay_seconds: int) tuple.
+    """
+    # Get conversation history for analysis
+    conversation = context_manager.get_conversation_context(chat_id)
+    
+    # Analyze last few exchanges
+    prompt = f"""
+    {PERSONALITY}
+    
+    Тобі треба вирішити, чи варто мені надіслати додаткове повідомлення після моєї попередньої відповіді.
+    
+    Нещодавня розмова:
+    {conversation}
+    
+    Моя попередня відповідь: "{previous_response}"
+    
+    Проаналізуй мою відповідь і визнач, чи варто мені надіслати додаткове повідомлення, щоб зробити спілкування більш природним.
+    Деякі вагомі причини для додаткового повідомлення:
+    1. Моя відповідь закінчується питанням, але могла б бути розширена
+    2. Я згадала щось цікаве, що можна розвинути
+    3. Я поділилася чимось про себе, що можна доповнити пов'язаною думкою
+    4. Розмова має дружній, невимушений тон, який виграє від швидкого доповнення
+    
+    НЕ надсилай додаткове повідомлення, якщо:
+    1. Моя відповідь була завершеною або вичерпною
+    2. Я вже поставила кілька запитань
+    3. Розмова формальна або чисто ділова
+    4. Я відповідаю на конкретну команду чи інструкцію
+    
+    Поверни JSON об'єкт з наступними полями:
+    {{"should_send": true/false, "reason": "коротке пояснення", "delay_seconds": <секунди очікування перед надсиланням>}}
+    """
+    
+    # Log token usage for analysis request
+    log_token_usage(prompt, "input")
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
+        
+        # Log token usage for analysis response
+        log_token_usage(response.text, "output")
+        
+        # Extract JSON from response
+        import json
+        import re
+        
+        # Find JSON pattern in the response
+        json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        if json_match:
+            analysis = json.loads(json_match.group(0))
+            return analysis.get("should_send", False), analysis.get("delay_seconds", 2)
+        
+        return False, 0
+    
+    except Exception as e:
+        print(f"Error analyzing follow-up potential: {str(e)}")
+        return False, 0
+
+def generate_followup_message(chat_id, user_id, username, previous_response):
+    """Generate a follow-up message based on conversation context and previous response"""
+    # Get conversation context
+    conversation = context_manager.get_conversation_context(chat_id)
+    
+    # Get memory context
+    memory_context = get_memory_context(chat_id, user_id)
+    
+    # Build prompt for follow-up generation
+    prompt = f"""{PERSONALITY}
+
+{memory_context}
+
+Нещодавня розмова:
+{conversation}
+
+Моя попередня відповідь була: "{previous_response}"
+
+Згенеруй коротке, природне додаткове повідомлення (1-2 речення). Це має виглядати так, ніби я просто згадала ще одну думку або хотіла додати щось невелике до того, що щойно сказала. Зроби це невимушеним і не повторюй інформацію. Не став більше одного питання.
+
+Моє додаткове повідомлення:"""
+
+    # Log token usage
+    log_token_usage(prompt, "input")
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
+        
+        followup = response.text.strip()
+        
+        # Log token usage
+        log_token_usage(followup, "output")
+        
+        return followup
+    except Exception as e:
+        print(f"Error generating follow-up message: {str(e)}")
+        return None
+
+# Handle scheduled follow-up messages
+followup_queue = {}
+
+def schedule_followup_check(chat_id, user_id, username, previous_response, delay_seconds):
+    """Schedule a follow-up message to be sent after a delay"""
+    followup_key = f"{chat_id}:{int(time.time())}"
+    followup_queue[followup_key] = {
+        "chat_id": chat_id,
+        "user_id": user_id,
+        "username": username,
+        "previous_response": previous_response,
+        "scheduled_time": time.time() + delay_seconds
+    }
+    print(f"[SERVER LOG] Scheduled follow-up check for chat {chat_id} in {delay_seconds} seconds")
+
+def process_followup_queue():
+    """Process any pending follow-up messages"""
+    current_time = time.time()
+    keys_to_remove = []
+    
+    for key, data in followup_queue.items():
+        if current_time >= data["scheduled_time"]:
+            try:
+                chat_id = data["chat_id"]
+                user_id = data["user_id"]
+                username = data["username"]
+                previous_response = data["previous_response"]
+                
+                # Generate and send follow-up
+                followup_text = generate_followup_message(chat_id, user_id, username, previous_response)
+                if followup_text:
+                    # Send typing indication
+                    send_typing_action(chat_id, followup_text)
+                    
+                    # Send the follow-up message
+                    send_message(chat_id, followup_text)
+                    
+                    # Add the follow-up to context
+                    is_group = context_manager.is_group_chat(chat_id)
+                    context_manager.add_message(chat_id, None, CONFIG["bot_name"], followup_text, is_bot=True, is_group=is_group)
+                    
+                    print(f"[SERVER LOG] Sent follow-up message to chat {chat_id}")
+            except Exception as e:
+                print(f"[SERVER LOG] Error processing follow-up: {str(e)}")
+            
+            # Mark for removal
+            keys_to_remove.append(key)
+    
+    # Clean up processed items
+    for key in keys_to_remove:
+        del followup_queue[key]
+    
+    return len(keys_to_remove)
+
+# Create a storage for forwarded messages
+forwarded_batches = {}
+FORWARD_BATCH_TIMEOUT = 3  # seconds to wait for more forwarded messages
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming webhook from Telegram"""
-    global message_batches
+    global message_batches, forwarded_batches
     
     data = request.get_json()
     print(f"Received webhook data")
     
     # Periodically check token usage
     check_token_usage()
+    
+    # Process any pending follow-up messages
+    followups_processed = process_followup_queue()
+    if followups_processed > 0:
+        print(f"Processed {followups_processed} follow-up messages")
     
     # Process pending user impressions in the background (rate-limited)
     impressions_processed = process_pending_impressions()
@@ -904,6 +1072,9 @@ def webhook():
     if scheduled_messenger and chat_id:
         scheduled_messenger.register_chat(chat_id, "group" if is_group else "private")
         scheduled_messenger.update_chat_activity(chat_id)
+    
+    # Check if this is a forwarded message
+    is_forwarded = 'forward_from' in message or 'forward_from_chat' in message or 'forward_sender_name' in message
     
     # Process message text
     if 'text' in message:
@@ -990,12 +1161,97 @@ def webhook():
                 # Add user to session
                 context_manager.update_session(chat_id, user_id, username)
         
-        # Create batch key for chat+user combination for message batching
+        # Special handling for forwarded messages - they get batched by chat_id
+        if is_forwarded and CONFIG.get("message_batching", {}).get("enabled", True):
+            forward_batch_key = f"forward:{chat_id}"
+            current_time = time.time()
+            
+            # Forward sender info
+            forward_from = ""
+            if 'forward_from' in message and message['forward_from']:
+                forward_from = message['forward_from'].get('username', message['forward_from'].get('first_name', 'Unknown'))
+            elif 'forward_sender_name' in message:
+                forward_from = message['forward_sender_name']
+            elif 'forward_from_chat' in message:
+                forward_from = f"чату {message['forward_from_chat'].get('title', 'Unknown')}"
+            
+            # Format message with its forwarded origin
+            formatted_message = f"[Переслано від {forward_from}]: {message_text}"
+            
+            # Add to existing forward batch or create a new one
+            if forward_batch_key in forwarded_batches and current_time - forwarded_batches[forward_batch_key]['last_update'] < FORWARD_BATCH_TIMEOUT:
+                # Add to existing batch
+                forwarded_batches[forward_batch_key]['messages'].append(formatted_message)
+                forwarded_batches[forward_batch_key]['last_update'] = current_time
+                return 'OK'
+            else:
+                # Create new batch
+                forwarded_batches[forward_batch_key] = {
+                    'messages': [formatted_message],
+                    'initiator_id': user_id,  # Track who initiated the forwards
+                    'initiator_name': username,
+                    'created': current_time,
+                    'last_update': current_time,
+                    'is_group': is_group
+                }
+                
+                # Wait for potential additional forwarded messages
+                time.sleep(FORWARD_BATCH_TIMEOUT)
+                
+                # Get all forwarded messages in batch
+                batched_forwards = forwarded_batches[forward_batch_key]['messages']
+                initiator_id = forwarded_batches[forward_batch_key]['initiator_id']
+                initiator_name = forwarded_batches[forward_batch_key]['initiator_name']
+                batch_is_group = forwarded_batches[forward_batch_key]['is_group']
+                
+                # Clean up the batch
+                del forwarded_batches[forward_batch_key]
+                
+                # Combine forwarded messages for a single response if multiple messages
+                if len(batched_forwards) > 1:
+                    # Only respond if the bot would respond to normal messages in this context
+                    if should_respond(message_text) or should_force_respond or (
+                            batch_is_group and context_manager.is_session_active(chat_id, initiator_id) and 
+                            CONFIG.get("group_chat_settings", {}).get("auto_reply_to_session_participants", True)):
+                        
+                        # Start or update session for group chats if needed
+                        if batch_is_group and CONFIG.get("group_chat_settings", {}).get("session_enabled", True):
+                            if not context_manager.is_session_active(chat_id):
+                                context_manager.start_session(chat_id, initiator_id, initiator_name)
+                            else:
+                                context_manager.update_session(chat_id, initiator_id, initiator_name)
+                        
+                        # Prepare combined input text
+                        combined_input = f"Користувач {initiator_name} переслав кілька повідомлень:\n\n" + "\n".join(batched_forwards)
+                        
+                        # Send typing indicator
+                        send_typing_action(chat_id)
+                        
+                        # Generate response using user context
+                        response_text = generate_response(combined_input, chat_id, initiator_id, initiator_name)
+                        
+                        # Send typing action with dynamic timing
+                        send_typing_action(chat_id, response_text)
+                        
+                        # Send the response
+                        send_message(chat_id, response_text)
+                        
+                        # Add bot's response to context
+                        context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=batch_is_group)
+                        
+                        # Check if a follow-up message would be appropriate
+                        should_followup, delay_seconds = should_send_followup_message(chat_id, initiator_id, response_text)
+                        if should_followup:
+                            schedule_followup_check(chat_id, initiator_id, initiator_name, response_text, delay_seconds)
+                
+                return 'OK'
+        
+        # Create batch key for chat+user combination for message batching (for non-forwarded messages)
         batch_key = f"{chat_id}:{user_id}"
         current_time = time.time()
         
         # If this is a message that needs a response, check batching
-        if keyword_match and CONFIG.get("message_batching", {}).get("enabled", True):
+        if keyword_match and CONFIG.get("message_batching", {}).get("enabled", True) and not is_forwarded:
             # Add to batch if there's an active batch for this user in this chat
             if batch_key in message_batches and current_time - message_batches[batch_key]['last_update'] < MESSAGE_BATCH_TIMEOUT:
                 # Add to existing batch
@@ -1048,6 +1304,11 @@ def webhook():
                     # Add bot response to context
                     context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
                     
+                    # Check if a follow-up message would be appropriate
+                    should_followup, delay_seconds = should_send_followup_message(chat_id, batch_user_id, response_text)
+                    if should_followup:
+                        schedule_followup_check(chat_id, batch_user_id, username, response_text, delay_seconds)
+                    
                     return 'OK'
                 else:
                     # Single message processing continues with normal flow
@@ -1076,6 +1337,12 @@ def webhook():
                 
                 # Add bot's response to context
                 context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
+                
+                # Check if a follow-up message would be appropriate
+                should_followup, delay_seconds = should_send_followup_message(chat_id, user_id, response_text)
+                if should_followup:
+                    schedule_followup_check(chat_id, user_id, username, response_text, delay_seconds)
+                
             except Exception as e:
                 print(f"Error generating response: {str(e)}")
                 send_message(chat_id, "вибач, щось пішло не так. спробуй ще раз через хвилину")

@@ -78,7 +78,7 @@
   },
   "message_batching": {
     "enabled": true,
-    "timeout_seconds": 2,
+    "timeout_seconds": 1,
     "combine_forwarded_messages": true
   },
   "scheduled_messages": {
