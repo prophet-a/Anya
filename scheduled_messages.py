@@ -47,10 +47,14 @@ class ScheduledMessenger:
         ]
         
         # Initialize Gemini
-        self.client = genai.Client(
-            api_key=gemini_api_key,
-            # http_options=HttpOptions(api_version=\"v1\")
-        )
+        self.client = None # Initialize as None
+        try:
+             self.client = genai.Client(
+                 api_key=gemini_api_key,
+                 # http_options=HttpOptions(api_version="v1")
+             )
+        except Exception as e:
+             print(f"[ScheduledMessenger] Error initializing Gemini client: {str(e)}")
         
         # Load config
         self.config = self._load_config()
@@ -221,8 +225,9 @@ class ScheduledMessenger:
             
             # Calculate typing time based on message length
             # 30ms per character with min/max bounds
-            typing_seconds = min(max(len(text) * 0.03, 1), 7)
-            time.sleep(typing_seconds)
+            # REMOVED sleep based on calculation
+            # typing_seconds = min(max(len(text) * 0.03, 1), 7)
+            # time.sleep(typing_seconds)
         except Exception as e:
             print(f"Error sending typing action: {str(e)}")
         

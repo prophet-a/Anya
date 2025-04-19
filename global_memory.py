@@ -18,16 +18,18 @@ class GlobalMemory:
         memory_file = global_settings.get("memory_file", memory_file)
         self.memory_file = os.path.join(self.memory_dir, memory_file)
         
-        self.users = self._load_memory()
-        self.chat_analytics = {}  # Store analytics about chats
-        self.relationship_analyses = {}  # Store analyses of user relationships
-        
-        # Tracking when various analyses were last performed
+        # Initialize main data structures
+        self.users = {}
+        self.chat_analytics = {}
+        self.relationship_analyses = {}
         self.last_analyses = {
             "user_analysis": {},  # Per-user last analysis
             "chat_analysis": {},  # Per-chat last analysis
             "relationship_analysis": {}  # Per-chat last relationship analysis
         }
+
+        # Load memory from file
+        self._load_memory() # This method now populates the class attributes
         
         # Set thresholds from config or use defaults
         default_thresholds = {
@@ -54,21 +56,37 @@ class GlobalMemory:
         print(f"Max saved impressions per user: {self.max_impressions}")
     
     def _load_memory(self):
-        """Load global memory from file if it exists"""
+        """Load global memory from file if it exists and populate class attributes"""
         if os.path.exists(self.memory_file):
             try:
                 with open(self.memory_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    return data.get("users", {})
+                    # Load data into class attributes
+                    self.users = data.get("users", {})
+                    self.chat_analytics = data.get("chat_analytics", {})
+                    self.relationship_analyses = data.get("relationship_analyses", {})
+                    self.last_analyses = data.get("last_analyses", {
+                        "user_analysis": {}, "chat_analysis": {}, "relationship_analysis": {}
+                    })
+                    print(f"[GlobalMemory] Successfully loaded data from {self.memory_file}")
+                    return True # Indicate success
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON from global memory file {self.memory_file}: {str(e)}. Starting fresh.")
             except Exception as e:
-                print(f"Error loading global memory: {str(e)}")
-        return {}
+                print(f"Error loading global memory from {self.memory_file}: {str(e)}. Starting fresh.")
+        else:
+            print(f"[GlobalMemory] File {self.memory_file} not found. Starting fresh.")
+        # Reset to defaults if loading failed or file not found
+        self.users = {}
+        self.chat_analytics = {}
+        self.relationship_analyses = {}
+        self.last_analyses = {"user_analysis": {}, "chat_analysis": {}, "relationship_analysis": {}}
+        return False # Indicate failure or fresh start
     
-    def _save_memory(self):
-        """Save global memory to file"""
-        # Only save if data has changed
+    def save_memory_if_dirty(self):
+        """Save global memory to file only if changes have been made"""
         if not self._dirty:
-            return
+            return False
 
         try:
             # Ensure the directory exists
@@ -85,8 +103,17 @@ class GlobalMemory:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             # Reset dirty flag after successful save
             self._dirty = False
+            print(f"[GlobalMemory] Global memory saved to {self.memory_file}")
+            return True
         except Exception as e:
             print(f"Error saving global memory: {str(e)}")
+            return False
+    
+    # Keep internal _save_memory for explicit calls if needed
+    def _save_memory(self):
+        """Internal method to force save memory, used cautiously."""
+        self._dirty = True # Ensure it saves if called directly
+        return self.save_memory_if_dirty()
     
     def process_message(self, chat_id, user_id, username, message, is_bot=False):
         """
@@ -181,9 +208,6 @@ class GlobalMemory:
             analyses_performed = True
             self._dirty = True # Mark memory as dirty (analysis flags changed)
         
-        # Save changes if dirty
-        self._save_memory()
-        
         return analyses_performed
     
     def _ensure_user_exists(self, user_id, username):
@@ -210,19 +234,20 @@ class GlobalMemory:
                  self.users[user_id]["username"] = username # Keep username updated
                  self._dirty = True # Mark memory as dirty
             # Always update last_seen, but don't mark as dirty just for this
-            self.users[user_id]["last_seen"] = datetime.now().isoformat()
+            if self.users[user_id].get("last_seen") != datetime.now().isoformat()[:19]: # Avoid marking dirty for frequent updates
+                 self.users[user_id]["last_seen"] = datetime.now().isoformat()
+                 # Don't mark dirty just for last_seen to reduce save frequency
     
     def get_user_profile(self, user_id):
         """Get the user profile from global memory"""
         user_id_str = str(user_id)
         
         if user_id_str in self.users:
-            # Mark as no longer needing update
-            self.users[user_id_str]["needs_profile_update"] = False
+            # Mark as no longer needing update if it was needed
+            if self.users[user_id_str].get("needs_profile_update", False):
+                self.users[user_id_str]["needs_profile_update"] = False
+                self._dirty = True # Mark memory as dirty only if flag changed
 
-            # Save changes
-            self._dirty = True # Mark memory as dirty
-            self._save_memory()
             return self.users[user_id_str]
         
         return None
@@ -256,7 +281,6 @@ class GlobalMemory:
         
         # Save changes
         self._dirty = True # Mark memory as dirty
-        self._save_memory()
         return True
     
     def save_user_impression(self, user_id, impression):
@@ -287,7 +311,6 @@ class GlobalMemory:
         
         # Save changes
         self._dirty = True # Mark memory as dirty
-        self._save_memory()
         return True
     
     def get_user_impressions(self, user_id):
@@ -335,7 +358,6 @@ class GlobalMemory:
         
         # Save changes
         self._dirty = True # Mark memory as dirty
-        self._save_memory()
         return True
     
     def get_relationship_analysis(self, chat_id):
@@ -394,7 +416,6 @@ class GlobalMemory:
                 self.analysis_thresholds[key] = value
                 self._dirty = True # Mark memory as dirty (thresholds are part of saved data implicitly via config, but let's mark it)
         
-        self._save_memory() # Save if thresholds changed
         return self.analysis_thresholds
         
     def get_global_context(self, chat_id, user_id):

@@ -24,8 +24,9 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
 # Використовуємо напряму шлях до диску
 MEMORY_PATH = '/memory/memory.json'
+GLOBAL_MEMORY_PATH = '/memory/global_memory.json' # Define path for global memory
 TOKEN_USAGE_FILE = '/memory/token_usage.json'
-print(f"[SERVER LOG] Using disk storage at {MEMORY_PATH}")
+print(f"[SERVER LOG] Using disk storage at {MEMORY_PATH} and {GLOBAL_MEMORY_PATH}")
 
 # Переконаємося, що директорія існує
 try:
@@ -35,6 +36,7 @@ except Exception as e:
     print(f"[SERVER LOG] Failed to create memory directory: {str(e)}")
     # Якщо не вдалося створити директорію, використовуємо локальне сховище
     MEMORY_PATH = 'memory.json'
+    GLOBAL_MEMORY_PATH = 'global_memory.json'
     TOKEN_USAGE_FILE = 'token_usage.json'
     print("[SERVER LOG] Fallback to local storage")
 
@@ -87,7 +89,7 @@ context_manager = ContextManager(
 )
 
 # Initialize global memory
-global_memory = GlobalMemory(config=CONFIG)
+global_memory = GlobalMemory(config=CONFIG, memory_file=GLOBAL_MEMORY_PATH)
 
 # Initialize context cache
 context_cache = ContextCache(context_manager, CONFIG)
@@ -249,10 +251,11 @@ def send_typing_action(chat_id, message_text=None):
     response = requests.post(url, json=payload)
     
     # If message text is provided, calculate typing duration
-    if message_text:
-        # Calculate typing time: 30ms per character with min/max bounds
-        typing_seconds = min(max(len(message_text) * 0.03, 1), 7)
-        # time.sleep(typing_seconds) # Removed sleep for performance
+    # REMOVED sleep based on calculation
+    # if message_text:
+    #     # Calculate typing time: 30ms per character with min/max bounds
+    #     typing_seconds = min(max(len(message_text) * 0.03, 1), 7)
+    #     # time.sleep(typing_seconds) # Removed sleep for performance
 
     return response.json()
 
@@ -343,14 +346,24 @@ def get_memory_context(chat_id, user_id=None):
     # Get local chat-specific memory
     memory = context_manager.get_memory(chat_id)
     if not memory:
-        return ""
+        return "" # Return empty string if no memory for chat
         
     memory_context = "Important information from memory:\n"
     
-    user_info = memory.get("user_info", {})
-    if user_info:
+    # Combine general and user-specific info if user_id is present
+    user_specific_info = {}
+    if user_id:
+        user_id_str = str(user_id)
+        users_memory = memory.get("users", {})
+        if user_id_str in users_memory:
+            user_specific_info = users_memory[user_id_str].get("user_info", {})
+    
+    general_user_info = memory.get("user_info", {}) # Older general info
+    combined_user_info = {**general_user_info, **user_specific_info} # User-specific overrides general
+
+    if combined_user_info:
         memory_context += "User information:\n"
-        for key, value in user_info.items():
+        for key, value in combined_user_info.items():
             memory_context += f"- {key}: {value}\n"
     
     topics = memory.get("topics_discussed", [])
@@ -389,16 +402,6 @@ def get_memory_context(chat_id, user_id=None):
 
 def generate_response(user_input, chat_id, user_id=None, username=None):
     """Generate a response using Gemini API"""
-    # Check if summarization is needed first
-    if context_cache.should_create_summary(chat_id):
-        try:
-            summary = generate_conversation_summary(chat_id)
-            if summary:
-                context_cache.save_conversation_summary(chat_id, summary)
-                print(f"Generated conversation summary for chat {chat_id}")
-        except Exception as e:
-            print(f"Error generating conversation summary: {str(e)}")
-    
     # Get conversation history
     conversation_history = context_manager.get_conversation_context(chat_id)
     
@@ -970,7 +973,7 @@ def generate_followup_message(chat_id, user_id, username, previous_response):
 followup_queue = {}
 
 def schedule_followup_check(chat_id, user_id, username, previous_response, delay_seconds):
-    """Schedule a follow-up message to be sent after a delay"""
+    """DEPRECATED: Schedule a follow-up message to be sent after a delay. Use schedule_followup_task instead."""
     followup_key = f"{chat_id}:{int(time.time())}"
     followup_queue[followup_key] = {
         "chat_id": chat_id,
@@ -981,38 +984,72 @@ def schedule_followup_check(chat_id, user_id, username, previous_response, delay
     }
     print(f"[SERVER LOG] Scheduled follow-up check for chat {chat_id} in {delay_seconds} seconds")
 
+def schedule_followup_task(chat_id, user_id, username, previous_response):
+    """Schedules a task to potentially send a follow-up message later."""
+    # The actual check (should_send_followup_message) and delay happen in process_followup_queue
+    # We use a unique key including timestamp to avoid overwriting rapidly scheduled tasks
+    followup_key = f"{chat_id}:{user_id}:{int(time.time())}"
+    # Store the necessary info. The processing time will be handled by the queue processor.
+    followup_queue[followup_key] = {
+        "chat_id": chat_id,
+        "user_id": user_id,
+        "username": username,
+        "previous_response": previous_response,
+        "scheduled_time": time.time() # Record when it was scheduled, processing logic will add delay
+    }
+    print(f"[SERVER LOG] Follow-up task added to queue for chat {chat_id}, user {user_id}")
+
 def process_followup_queue():
     """Process any pending follow-up messages"""
     current_time = time.time()
     keys_to_remove = []
     
-    for key, data in followup_queue.items():
-        if current_time >= data["scheduled_time"]:
+    for key, data in list(followup_queue.items()): # Use list() for safe iteration while modifying
+        # Check if enough time has passed since scheduling to perform the analysis
+        # Add a small initial delay (e.g., 5 seconds) before even checking
+        initial_delay = 5 
+        if current_time >= data["scheduled_time"] + initial_delay:
             try:
                 chat_id = data["chat_id"]
                 user_id = data["user_id"]
                 username = data["username"]
                 previous_response = data["previous_response"]
                 
-                # Generate and send follow-up
-                followup_text = generate_followup_message(chat_id, user_id, username, previous_response)
-                if followup_text:
-                    # Send typing indication
-                    send_typing_action(chat_id, followup_text)
-                    
-                    # Send the follow-up message
-                    send_message(chat_id, followup_text)
-                    
-                    # Add the follow-up to context
-                    is_group = context_manager.is_group_chat(chat_id)
-                    context_manager.add_message(chat_id, None, CONFIG["bot_name"], followup_text, is_bot=True, is_group=is_group)
-                    
-                    print(f"[SERVER LOG] Sent follow-up message to chat {chat_id}")
+                # --- Moved check here --- 
+                should_send, check_delay_seconds = should_send_followup_message(chat_id, user_id, previous_response)
+                
+                if should_send:
+                     # Check if enough *additional* time has passed based on the check_delay_seconds
+                     if current_time >= data["scheduled_time"] + initial_delay + check_delay_seconds:
+                        # Generate and send follow-up
+                        followup_text = generate_followup_message(chat_id, user_id, username, previous_response)
+                        if followup_text:
+                            # Send typing indication
+                            send_typing_action(chat_id, followup_text)
+                            
+                            # Send the follow-up message
+                            send_message(chat_id, followup_text)
+                            
+                            # Add the follow-up to context
+                            is_group = context_manager.is_group_chat(chat_id)
+                            context_manager.add_message(chat_id, None, CONFIG["bot_name"], followup_text, is_bot=True, is_group=is_group)
+                            
+                            print(f"[SERVER LOG] Sent follow-up message to chat {chat_id}")
+                        
+                        # Mark for removal after sending (or trying to send)
+                        keys_to_remove.append(key)
+                     # else: Not enough time passed yet, keep in queue
+                else:
+                    # If should_send is false, remove from queue immediately
+                    print(f"[SERVER LOG] Follow-up for chat {chat_id} deemed unnecessary.")
+                    keys_to_remove.append(key)
+                # --- End moved check --- 
+                
             except Exception as e:
-                print(f"[SERVER LOG] Error processing follow-up: {str(e)}")
+                print(f"[SERVER LOG] Error processing follow-up for key {key}: {str(e)}")
+                # Remove failing task to prevent infinite loops
+                keys_to_remove.append(key)
             
-            # Mark for removal
-            keys_to_remove.append(key)
     
     # Clean up processed items
     for key in keys_to_remove:
@@ -1023,28 +1060,103 @@ def process_followup_queue():
 # Function to run background tasks in a separate thread
 def run_background_tasks():
     print("[SERVER LOG] Starting background tasks...")
+    tasks_completed = 0
     try:
         # Process any pending follow-up messages
         followups_processed = process_followup_queue()
         if followups_processed > 0:
             print(f"[SERVER LOG] Background: Processed {followups_processed} follow-up messages")
+            tasks_completed += followups_processed
 
         # Process pending user impressions in the background (rate-limited)
         impressions_processed = process_pending_impressions()
         if impressions_processed > 0:
             print(f"[SERVER LOG] Background: Processed {impressions_processed} user impressions")
+            tasks_completed += impressions_processed
 
         # Also process global memory analyses
         analysis_results = global_analysis.process_pending_analyses(client)
-        if analysis_results["profiles_processed"] > 0 or analysis_results["relationships_processed"] > 0:
-            print(f"[SERVER LOG] Background: Processed global analyses: {analysis_results}")
-        print("[SERVER LOG] Background tasks finished.")
+        profiles_done = analysis_results.get("profiles_processed", 0)
+        relationships_done = analysis_results.get("relationships_processed", 0)
+        if profiles_done > 0 or relationships_done > 0:
+            print(f"[SERVER LOG] Background: Processed global analyses: Profiles={profiles_done}, Relationships={relationships_done}")
+            tasks_completed += profiles_done + relationships_done
+        
+        # --- Added Periodic Summary Generation --- 
+        chats_needing_summary = context_cache.get_chats_needing_summary()
+        summaries_processed = 0
+        for summary_chat_id in chats_needing_summary[:3]: # Limit to 3 summaries per run
+            try:
+                print(f"[SERVER LOG] Background: Generating summary for chat {summary_chat_id}...")
+                generate_conversation_summary(summary_chat_id) # This function now saves internally
+                summaries_processed += 1
+            except Exception as e:
+                print(f"[SERVER LOG] Background: Error generating summary for chat {summary_chat_id}: {str(e)}")
+        if summaries_processed > 0:
+            print(f"[SERVER LOG] Background: Processed {summaries_processed} conversation summaries.")
+            tasks_completed += summaries_processed
+        # --- End Periodic Summary Generation --- 
+
+        if tasks_completed == 0:
+            print("[SERVER LOG] Background tasks finished. No pending work found.")
+        else:
+            print(f"[SERVER LOG] Background tasks finished. Completed {tasks_completed} operations.")
     except Exception as e:
         print(f"[SERVER LOG] Error in background tasks: {str(e)}")
+
+# --- Dedicated Saving Thread --- 
+SAVE_INTERVAL_SECONDS = 45 # Save memory every 45 seconds if changed
+
+def periodic_save_loop(interval):
+    print(f"[SERVER LOG] Starting periodic save thread (interval: {interval}s)")
+    while True:
+        try:
+            time.sleep(interval)
+            print("[SERVER LOG] Periodic save check...")
+            context_saved = context_manager.save_memory_if_dirty()
+            global_saved = global_memory.save_memory_if_dirty()
+            if not context_saved and not global_saved:
+                print("[SERVER LOG] No memory changes to save.")
+        except Exception as e:
+            print(f"[SERVER LOG] Error in periodic save loop: {str(e)}")
+            # Avoid busy-looping on error
+            time.sleep(interval)
+# -----------------------------
 
 # Create a storage for forwarded messages
 forwarded_batches = {}
 FORWARD_BATCH_TIMEOUT = 3  # seconds to wait for more forwarded messages
+
+def generate_and_send_personal_note(chat_id, user_id, username, memory_context, user_impression):
+    print(f"[SERVER LOG] Generating personal note for {username} in chat {chat_id}")
+    personal_prompt = f"""
+    {PERSONALITY}
+    
+    Напиши коротке особисте повідомлення для користувача {username} на основі всього, що я знаю про цю людину.
+    Це повинна бути щира, особиста замітка від мене (Анни) до цієї людини.
+    Не більше 3 речень. Повідомлення повинно бути дуже особистим і показувати, що я уважна до деталей
+    в наших розмовах.
+    
+    Що я знаю про цю людину:
+    {memory_context}
+    
+    Моє враження: {user_impression}
+    """
+    
+    try:
+        if client:
+             client_response = client.models.generate_content(
+                 model="gemini-2.5-flash-preview-04-17",
+                 contents=personal_prompt,
+             )
+             personal_note = client_response.text.strip()
+             # Send the note as a separate message
+             send_message(chat_id, personal_note)
+             print(f"[SERVER LOG] Sent personal note to {username} in chat {chat_id}")
+        else:
+             print(f"[SERVER LOG] Cannot generate personal note: Gemini client not initialized.")
+    except Exception as e:
+        print(f"[SERVER LOG] Error generating/sending personal note: {str(e)}")
 
 def handle_whoami_command(chat_id, user_id, username):
     """Handle /whoami command, show user what the bot knows and thinks about them"""
@@ -1104,36 +1216,23 @@ def handle_whoami_command(chat_id, user_id, username):
         response += "\n*Враження:*\n"
         response += "Я ще не сформувала чіткого враження про тебе. Ми недостатньо спілкувались.\n\n"
     
-    # Add some personal touch
+    # Add some personal touch - send main info first, then generate note
     response += "*Особисте від мене:*\n"
+    response += "(Зараз спробую згадати щось особливе...) \n\n"
     
-    # Generate a personalized note based on what we know
-    personal_prompt = f"""
-    {PERSONALITY}
+    # Send the initial response without the note
+    send_message(chat_id, response)
+    # Get the text sent, excluding the placeholder part for context logging
+    sent_text = response.replace("*(Зараз спробую згадати щось особливе...) \n\n*","")
+    context_manager.add_message(chat_id, None, CONFIG["bot_name"], sent_text.strip(), is_bot=True, is_group=context_manager.is_group_chat(chat_id))
+
+    # Schedule the personal note generation in a background thread
+    note_thread = threading.Thread(target=generate_and_send_personal_note, 
+                                 args=(chat_id, user_id, username, memory_context, user_impression))
+    note_thread.start()
     
-    Напиши коротке особисте повідомлення для користувача {username} на основі всього, що я знаю про цю людину.
-    Це повинна бути щира, особиста замітка від мене (Анни) до цієї людини.
-    Не більше 3 речень. Повідомлення повинно бути дуже особистим і показувати, що я уважна до деталей
-    в наших розмовах.
-    
-    Що я знаю про цю людину:
-    {memory_context}
-    
-    Моє враження: {user_impression}
-    """
-    
-    try:
-        client_response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-04-17",
-            contents=personal_prompt,
-        )
-        personal_note = client_response.text.strip()
-        response += personal_note
-    except Exception as e:
-        print(f"Error generating personal note: {str(e)}")
-        response += "Чим більше ми спілкуємось, тим краще я тебе розумію. Дякую, що пишеш мені!"
-    
-    return response
+    # Return None because the main message is already sent
+    return None
 
 def handle_help_command(chat_id):
     """Display a list of available commands"""
@@ -1209,8 +1308,16 @@ def webhook():
             
             # Check if the replied message was from the bot
             if 'from' in message['reply_to_message']:
-                bot_id = message['reply_to_message']['from'].get('username')
-                is_reply_to_bot = bot_id and CONFIG['bot_name'].lower() in bot_id.lower()
+                # Use bot user ID if available, otherwise compare names/usernames loosely
+                replied_user_info = message['reply_to_message']['from']
+                if replied_user_info.get('is_bot'):
+                    # Check if it's *this* bot
+                    # A more robust check would involve getting the bot's own ID via getMe
+                    bot_username_from_config = CONFIG.get('bot_name', '').lower()
+                    replied_bot_username = replied_user_info.get('username', '').lower()
+                    replied_bot_firstname = replied_user_info.get('first_name', '').lower()
+                    if bot_username_from_config in replied_bot_username or bot_username_from_config in replied_bot_firstname:
+                        is_reply_to_bot = True
             
             # Add reply context if enabled
             if CONFIG.get("group_chat_settings", {}).get("include_reply_context", True):
@@ -1220,15 +1327,15 @@ def webhook():
         # Handle /help command
         if message_text.startswith('/help'):
             response = handle_help_command(chat_id)
-            send_message(chat_id, response)
-            context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
+            if response: # Ensure there is a response to send
+                 send_message(chat_id, response)
+                 context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
             return 'OK'
         
         # Handle /whoami command
         if message_text.startswith('/whoami'):
-            response = handle_whoami_command(chat_id, user_id, username)
-            send_message(chat_id, response)
-            context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
+            # This command now sends its own message(s) and returns None
+            handle_whoami_command(chat_id, user_id, username)
             return 'OK'
         
         # Handle memory commands
@@ -1366,10 +1473,8 @@ def webhook():
                         # Add bot's response to context
                         context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=batch_is_group)
                         
-                        # Check if a follow-up message would be appropriate
-                        should_followup, delay_seconds = should_send_followup_message(chat_id, initiator_id, response_text)
-                        if should_followup:
-                            schedule_followup_check(chat_id, initiator_id, initiator_name, response_text, delay_seconds)
+                        # Always schedule potential follow-up task (delay happens in background check)
+                        schedule_followup_task(chat_id, initiator_id, initiator_name, response_text)
                 
                 return 'OK'
         
@@ -1437,15 +1542,13 @@ def webhook():
                     # Add bot response to context
                     context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
                     
-                    # Check if a follow-up message would be appropriate
-                    should_followup, delay_seconds = should_send_followup_message(chat_id, batch_user_id, response_text)
-                    if should_followup:
-                        schedule_followup_check(chat_id, batch_user_id, username, response_text, delay_seconds)
+                    # Always schedule potential follow-up task (delay happens in background check)
+                    schedule_followup_task(chat_id, batch_user_id, username, response_text)
                     
                     return 'OK'
                 else:
                     # Single message processing continues with normal flow
-                    message_text = batched_messages[0]
+                    message_text = batched_messages[0] # This line needs correct indentation
         
         # Process the message if we should respond
         if keyword_match:
@@ -1479,10 +1582,8 @@ def webhook():
                 # Add bot's response to context
                 context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
                 
-                # Check if a follow-up message would be appropriate
-                should_followup, delay_seconds = should_send_followup_message(chat_id, user_id, response_text)
-                if should_followup:
-                    schedule_followup_check(chat_id, user_id, username, response_text, delay_seconds)
+                # Always schedule potential follow-up task (delay happens in background check)
+                schedule_followup_task(chat_id, user_id, username, response_text)
                 
             except Exception as e:
                 print(f"Error generating response: {str(e)}")
@@ -1496,4 +1597,8 @@ def index():
     return "Bot is running!"
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080))) 
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+
+    # Start the periodic save thread
+    save_thread = threading.Thread(target=periodic_save_loop, args=(SAVE_INTERVAL_SECONDS,), daemon=True)
+    save_thread.start() 

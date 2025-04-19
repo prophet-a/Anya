@@ -83,6 +83,21 @@ class ContextCache:
         
         return None
     
+    def get_chats_needing_summary(self):
+        """Return a list of chat_ids that might need a summary update."""
+        needs_summary = []
+        # Iterate through chats known by the context manager
+        # Note: We might need a better way to get all chat_ids if they aren't all in memory keys
+        all_chat_ids = list(self.context_manager.conversations.keys())
+        # Also check chat_ids from memory in case conversation history was cleared but memory remains
+        all_chat_ids.extend(list(self.context_manager.memory.keys()))
+        
+        for chat_id in set(all_chat_ids): # Use set to avoid duplicates
+            if self.should_create_summary(chat_id):
+                needs_summary.append(chat_id)
+                
+        return needs_summary
+    
     # For compatibility with existing code
     def get_cache_key(self, chat_id):
         """
