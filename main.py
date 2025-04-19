@@ -14,6 +14,7 @@ import global_analysis
 import time
 from datetime import datetime, timedelta
 from collections import defaultdict
+from google.api_core.client_options import HttpOptions
 
 app = Flask(__name__)
 
@@ -122,6 +123,7 @@ else:
 # Configure Gemini
 client = genai.Client(
     api_key=GEMINI_API_KEY,
+    http_options=HttpOptions(api_version="v1")
 )
 
 # Message batching system to handle multiple messages at once (for forwarded messages etc.)
