@@ -177,7 +177,9 @@ def log_token_usage(text, usage_type="traditional"):
     token_usage["total"] += estimated_tokens
     
     # Periodically log usage stats
-    if sum(token_usage.values()) % 1000 < 10:  # Log roughly every 1000 tokens
+    # Only sum numeric values, exclude the timestamp string
+    numeric_values = [v for k, v in token_usage.items() if k != "last_check_time" and isinstance(v, (int, float))]
+    if sum(numeric_values) % 1000 < 10:  # Log roughly every 1000 tokens
         print(f"[SERVER LOG] Token usage stats: {token_usage}")
         
         if token_usage["traditional"] > 0 and token_usage["summarized"] > 0:
