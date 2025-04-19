@@ -36,6 +36,7 @@
     "commands": {
       "/start": "Здарова бандіти",
       "/help": "Який хелп, чел? Просто пиши — я тут",
+      "/whoami": "Показую, що я про тебе знаю і думаю",
       "/schedule": "Керуй запланованими повідомленнями через /schedule status|on|off",
       "/global_memory": "Доступ до глобальної пам'яті: /global_memory users|profile|thresholds"
     }

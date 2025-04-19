@@ -1022,6 +1022,107 @@ def process_followup_queue():
 forwarded_batches = {}
 FORWARD_BATCH_TIMEOUT = 3  # seconds to wait for more forwarded messages
 
+def handle_whoami_command(chat_id, user_id, username):
+    """Handle /whoami command, show user what the bot knows and thinks about them"""
+    # Get memory context for the user
+    memory_context = get_memory_context(chat_id, user_id)
+    
+    # Get user impressions
+    user_impressions = context_manager.get_user_impressions(chat_id)
+    user_impression = user_impressions.get(str(user_id), "")
+    
+    # Get global user data if available
+    global_user_data = global_memory.get_user_profile(user_id)
+    
+    # Create response
+    response = "👤 *Ось що я про тебе знаю і думаю:*\n\n"
+    
+    # Add local chat memory
+    chat_memory = context_manager.get_memory(chat_id)
+    if chat_memory:
+        user_info = chat_memory.get("user_info", {})
+        if user_info:
+            response += "*Твої дані:*\n"
+            for key, value in user_info.items():
+                response += f"- {key}: {value}\n"
+            response += "\n"
+    
+    # Add global memory if available
+    if global_user_data:
+        total_messages = global_user_data.get("total_messages", 0)
+        response += f"*Загальна статистика:*\n"
+        response += f"- Всього повідомлень: {total_messages}\n"
+        response += f"- Активний(-а) в {len(global_user_data.get('chats', {}))} чатах\n\n"
+        
+        # Add profile data if available
+        profile = global_user_data.get("profile", {})
+        if profile:
+            response += "*Мій погляд на тебе:*\n"
+            
+            if "personality" in profile:
+                response += f"- Особистість: {profile['personality']}\n"
+            
+            if "interests" in profile and profile["interests"]:
+                response += f"- Інтереси: {', '.join(profile['interests'])}\n"
+            
+            if "behavior_patterns" in profile and profile["behavior_patterns"]:
+                response += f"- Поведінка: {', '.join(profile['behavior_patterns'])}\n"
+            
+            if "relationship_with_bot" in profile:
+                relationship = profile["relationship_with_bot"]
+                response += f"- Наші стосунки: {relationship}\n\n"
+    
+    # Add impression if available
+    if user_impression:
+        response += "\n*Моє враження про тебе:*\n"
+        response += f"{user_impression}\n\n"
+    else:
+        response += "\n*Враження:*\n"
+        response += "Я ще не сформувала чіткого враження про тебе. Ми недостатньо спілкувались.\n\n"
+    
+    # Add some personal touch
+    response += "*Особисте від мене:*\n"
+    
+    # Generate a personalized note based on what we know
+    personal_prompt = f"""
+    {PERSONALITY}
+    
+    Напиши коротке особисте повідомлення для користувача {username} на основі всього, що я знаю про цю людину.
+    Це повинна бути щира, особиста замітка від мене (Анни) до цієї людини.
+    Не більше 3 речень. Повідомлення повинно бути дуже особистим і показувати, що я уважна до деталей
+    в наших розмовах.
+    
+    Що я знаю про цю людину:
+    {memory_context}
+    
+    Моє враження: {user_impression}
+    """
+    
+    try:
+        client_response = client.models.generate_content(
+            model="gemini-2.5-flash-001",
+            contents=personal_prompt,
+        )
+        personal_note = client_response.text.strip()
+        response += personal_note
+    except Exception as e:
+        print(f"Error generating personal note: {str(e)}")
+        response += "Чим більше ми спілкуємось, тим краще я тебе розумію. Дякую, що пишеш мені!"
+    
+    return response
+
+def handle_help_command(chat_id):
+    """Display a list of available commands"""
+    commands = CONFIG["response_settings"].get("commands", {})
+    
+    response = "📋 *Доступні команди:*\n\n"
+    for cmd, desc in commands.items():
+        response += f"{cmd} - {desc}\n"
+    
+    response += "\nТакож можеш просто написати моє ім'я і я відповім 🙂"
+    
+    return response
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming webhook from Telegram"""
@@ -1105,6 +1206,20 @@ def webhook():
             if CONFIG.get("group_chat_settings", {}).get("include_reply_context", True):
                 reply_context = f"[У відповідь на повідомлення від {replied_username}: \"{replied_text}\"] "
                 message_text = reply_context + message_text
+                
+        # Handle /help command
+        if message_text.startswith('/help'):
+            response = handle_help_command(chat_id)
+            send_message(chat_id, response)
+            context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
+            return 'OK'
+        
+        # Handle /whoami command
+        if message_text.startswith('/whoami'):
+            response = handle_whoami_command(chat_id, user_id, username)
+            send_message(chat_id, response)
+            context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
+            return 'OK'
         
         # Handle memory commands
         if message_text.startswith('/memory'):
