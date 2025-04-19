@@ -19,6 +19,11 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
+# Debug: Print all environment variables
+print("[SERVER LOG] All environment variables:")
+for key, value in os.environ.items():
+    print(f"[SERVER LOG] {key}: {value}")
+
 # Set disk path for persistent storage on Render
 MEMORY_PATH = os.environ.get('RENDER_DISK_PATH', '')
 if MEMORY_PATH:
