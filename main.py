@@ -401,6 +401,26 @@ def webhook():
         # Check if message is in a group
         is_group = data['message']['chat']['type'] in ['group', 'supergroup']
         
+        # Check if this is a reply to another message
+        reply_context = ""
+        is_reply_to_bot = False
+        
+        if 'reply_to_message' in data['message'] and 'text' in data['message']['reply_to_message']:
+            replied_username = data['message']['reply_to_message'].get('from', {}).get('username', 'Unknown')
+            replied_text = data['message']['reply_to_message']['text']
+            
+            # Check if the replied message was from the bot
+            if 'from' in data['message']['reply_to_message']:
+                bot_id = data['message']['reply_to_message']['from'].get('username')
+                is_reply_to_bot = bot_id and CONFIG['bot_name'].lower() in bot_id.lower()
+            
+            # Add reply context if enabled
+            if group_settings.get("include_reply_context", True):
+                # Format the replied message to add to the user input
+                reply_context = f"[У відповідь на повідомлення від {replied_username}: \"{replied_text}\"] "
+                # Modify user input to include context of the message being replied to
+                user_input = reply_context + user_input
+        
         # Update scheduled message activity tracking if enabled
         if scheduled_messenger:
             # Register this chat for potential scheduled messages
@@ -411,6 +431,9 @@ def webhook():
         
         # Add user message to context
         context_manager.add_message(chat_id, user_id, username, user_input, is_bot=False, is_group=is_group)
+        
+        # Check if bot should force respond to a reply
+        should_force_respond = is_reply_to_bot and CONFIG["response_settings"].get("respond_to_replies", True)
         
         # Determine if bot should respond
         if (is_group and not CONFIG["response_settings"]["respond_in_groups"]):
@@ -448,10 +471,11 @@ def webhook():
             
             # Group chat session handling
             if is_group and group_settings.get("session_enabled", True):
-                # Check if this is a message that should trigger a response (contains keyword)
-                keyword_match = should_respond(user_input)
+                # Check if this is a message that should trigger a response
+                # (contains keyword or is a reply to bot's message)
+                keyword_match = should_respond(user_input) or should_force_respond
                 
-                # If message matches a keyword, start a new session or update existing one
+                # If message matches a keyword or is a reply to bot, start a new session or update existing one
                 if keyword_match:
                     # Check if there's already an active session
                     if not context_manager.is_session_active(chat_id):
@@ -516,7 +540,7 @@ def webhook():
             
             # If not a group chat or sessions disabled, check if should respond
             if not is_group or not group_settings.get("session_enabled", True):
-                if should_respond(user_input):
+                if should_respond(user_input) or should_force_respond:
                     # Generate response
                     response_text = generate_response(user_input, chat_id)
                     
