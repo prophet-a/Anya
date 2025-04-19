@@ -288,7 +288,7 @@ def generate_user_impression(username, message_count, message_sample, existing_i
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash-001",
+            model="gemini-2.5-flash-preview-04-17",
             contents=prompt,
         )
         impression = response.text.strip()
@@ -432,7 +432,7 @@ def generate_response(user_input, chat_id, user_id=None, username=None):
     # Generate the response with Gemini
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash-001",
+            model="gemini-2.5-flash-preview-04-17",
             contents=prompt,
         )
         
@@ -729,7 +729,7 @@ def generate_conversation_summary(chat_id):
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash-001",
+            model="gemini-2.5-flash-preview-04-17",
             contents=summary_prompt,
         )
         
@@ -900,7 +900,7 @@ def should_send_followup_message(chat_id, user_id, previous_response):
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash-001",
+            model="gemini-2.5-flash-preview-04-17",
             contents=prompt,
         )
         
@@ -950,7 +950,7 @@ def generate_followup_message(chat_id, user_id, username, previous_response):
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash-001",
+            model="gemini-2.5-flash-preview-04-17",
             contents=prompt,
         )
         
@@ -1100,7 +1100,7 @@ def handle_whoami_command(chat_id, user_id, username):
     
     try:
         client_response = client.models.generate_content(
-            model="gemini-2.5-flash-001",
+            model="gemini-2.5-flash-preview-04-17",
             contents=personal_prompt,
         )
         personal_note = client_response.text.strip()
