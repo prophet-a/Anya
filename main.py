@@ -94,6 +94,122 @@ def send_typing_action(chat_id):
     response = requests.post(url, json=payload)
     return response.json()
 
+def generate_user_impression(username, message_count, message_sample, existing_impression=""):
+    """Generate a personality-infused impression of a user based on their messages"""
+    # Build a prompt that includes the bot's personality and the user's messages
+    prompt = PERSONALITY + "\n\n"
+    
+    prompt += f"""
+Зараз тобі потрібно сформувати враження про користувача {username} на основі їхніх повідомлень.
+У тебе є {message_count} повідомлень від цього користувача, але я покажу тобі лише останні 50 (або менше).
+
+Подумай, як би ти описала цю людину, базуючись на їхньому стилі спілкування, темах, які вони піднімають, 
+і загальній манері їхньої поведінки в чаті. Це повинно бути короткою замальовкою, як ти сприймаєш цю людину через призму свого характеру.
+
+Напиши це так, як ніби говориш сама із собою про людину, яку знаєш по чату. Використовуй свою звичайну манеру спілкування.
+Результат має бути від першої особи (як ти сприймаєш цю людину), довжиною не більше 5 речень.
+
+"""
+    
+    # If there's an existing impression, include it for continuity
+    if existing_impression:
+        prompt += f"\nРаніше ти думала про цю людину так:\n{existing_impression}\n\nТи можеш оновити своє враження, якщо бачиш нові деталі, або залишити його таким же, якщо воно досі актуальне.\n\n"
+    
+    # Include the message sample
+    prompt += f"\nОсь приклади повідомлень від {username}:\n\n{message_sample}\n\n"
+    
+    # Final instruction
+    prompt += "Напиши своє оновлене враження про цю людину з твоєї перспективи, враховуючи те, що ти знаєш про неї. Опиши, як ти її сприймаєш:"
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
+        impression = response.text.strip()
+        
+        # Clean up any extra formatting
+        if impression.startswith('"') and impression.endswith('"'):
+            impression = impression[1:-1]
+            
+        return impression
+    except Exception as e:
+        print(f"Error generating user impression: {str(e)}")
+        return "не змогла сформувати враження, щось пішло не так"
+
+def process_pending_impressions(max_to_process=3):
+    """Process a batch of pending user impressions"""
+    # Get users needing impressions
+    pending = context_manager.get_users_needing_impressions()
+    
+    # Process only a limited number to avoid overloading
+    for i, (chat_id, user_id) in enumerate(pending[:max_to_process]):
+        try:
+            # Get the impression data
+            data = context_manager.get_user_impression_data(chat_id, user_id)
+            if not data:
+                continue
+                
+            # Generate the impression
+            impression = generate_user_impression(
+                data["username"],
+                data["message_count"],
+                data["sample"],
+                data["existing_impression"]
+            )
+            
+            # Save the generated impression
+            context_manager.save_generated_impression(chat_id, user_id, impression)
+            
+            print(f"Generated impression for user {data['username']} in chat {chat_id}")
+            
+        except Exception as e:
+            print(f"Error processing impression for user {user_id} in chat {chat_id}: {str(e)}")
+    
+    return len(pending[:max_to_process])
+
+def get_memory_context(chat_id):
+    """Get memory context including user impressions for a specific chat"""
+    memory = context_manager.get_memory(chat_id)
+    if not memory:
+        return ""
+        
+    memory_context = "Important information from memory:\n"
+    
+    user_info = memory.get("user_info", {})
+    if user_info:
+        memory_context += "User information:\n"
+        for key, value in user_info.items():
+            memory_context += f"- {key}: {value}\n"
+    
+    topics = memory.get("topics_discussed", [])
+    if topics:
+        memory_context += "\nTopics previously discussed:\n"
+        for topic in topics:
+            memory_context += f"- {topic}\n"
+    
+    facts = memory.get("important_facts", [])
+    if facts:
+        memory_context += "\nImportant facts to remember:\n"
+        for fact in facts:
+            memory_context += f"- {fact}\n"
+    
+    # Add user impressions if available
+    user_impressions = memory.get("user_impressions", {})
+    if user_impressions:
+        memory_context += "\nMy impressions of people in this chat:\n"
+        for user_id, impression in user_impressions.items():
+            username = "Unknown"
+            # Try to find the username from conversation history
+            for msg in context_manager.conversations.get(str(chat_id), []):
+                if str(msg.get("user_id", "")) == user_id and msg.get("username"):
+                    username = msg["username"]
+                    break
+                    
+            memory_context += f"- {username}: {impression}\n"
+    
+    return memory_context
+
 def generate_response(user_input, chat_id):
     """Generate response using Gemini API with context"""
     # Get context and memory
@@ -104,28 +220,7 @@ def generate_response(user_input, chat_id):
         conversation_context = context_manager.get_conversation_context(chat_id)
     
     if context_settings.get("memory_enabled", True):
-        memory = context_manager.get_memory(chat_id)
-        if memory:
-            user_info = memory.get("user_info", {})
-            topics = memory.get("topics_discussed", [])
-            facts = memory.get("important_facts", [])
-            
-            memory_context = "Important information from memory:\n"
-            
-            if user_info:
-                memory_context += "User information:\n"
-                for key, value in user_info.items():
-                    memory_context += f"- {key}: {value}\n"
-            
-            if topics:
-                memory_context += "\nTopics previously discussed:\n"
-                for topic in topics:
-                    memory_context += f"- {topic}\n"
-            
-            if facts:
-                memory_context += "\nImportant facts to remember:\n"
-                for fact in facts:
-                    memory_context += f"- {fact}\n"
+        memory_context = get_memory_context(chat_id)
     
     # Build complete prompt
     prompt = PERSONALITY + "\n\n"
@@ -246,7 +341,7 @@ def handle_memory_command(chat_id, command_text):
     parts = command_text.split(' ', 2)  # Split into maximum 3 parts
     
     if len(parts) < 2:
-        return "Як юзати: /memory <дія> [дані]\nМожеш обрати: info, add, clear"
+        return "Як юзати: /memory <дія> [дані]\nМожеш обрати: info, impressions, add, clear"
     
     action = parts[1].lower()
     
@@ -277,6 +372,27 @@ def handle_memory_command(chat_id, command_text):
             response += "*Важливі штуки:*\n"
             for fact in facts:
                 response += f"- {fact}\n"
+        
+        return response
+    
+    elif action == "impressions":
+        # Display user impressions
+        user_impressions = context_manager.get_user_impressions(chat_id)
+        
+        if not user_impressions:
+            return "Я поки ні про кого особливої думки не маю, ще не придивилась"
+        
+        response = "💭 *Ось що я думаю про людей в цьому чаті:*\n\n"
+        
+        for user_id, impression in user_impressions.items():
+            username = "Unknown"
+            # Try to find the username from conversation history
+            for msg in context_manager.conversations.get(str(chat_id), []):
+                if str(msg.get("user_id", "")) == user_id and msg.get("username"):
+                    username = msg["username"]
+                    break
+                    
+            response += f"*{username}:* {impression}\n\n"
         
         return response
     
@@ -327,7 +443,7 @@ def handle_memory_command(chat_id, command_text):
             return "Та я й так тебе не знаю, тут і чистить нічо"
     
     else:
-        return f"❌ Шо за '{action}'? Не знаю такого. Спробуй info, add або clear"
+        return f"❌ Шо за '{action}'? Не знаю такого. Спробуй info, impressions, add або clear"
 
 def handle_schedule_command(chat_id, command_text):
     """Handle commands for scheduled messages"""
@@ -553,6 +669,12 @@ def webhook():
                     
                     # Add bot response to context
                     context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
+            
+            # Process any pending impressions (max 2 per request to avoid timeouts)
+            try:
+                process_pending_impressions(max_to_process=2)
+            except Exception as e:
+                print(f"Error processing impressions: {str(e)}")
         
         except Exception as e:
             send_message(chat_id, f"Ой, щось поламалось(( Тех.підтримка вже розбирається: {str(e)}")

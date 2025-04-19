@@ -43,7 +43,12 @@
     "enabled": true,
     "max_messages": 400,
     "memory_enabled": true,
-    "memory_file": "memory.json"
+    "memory_file": "memory.json",
+    "user_impressions": {
+      "enabled": true,
+      "min_messages_before_impression": 10,
+      "messages_between_updates": 30
+    }
   },
   "group_chat_settings": {
     "session_enabled": true,

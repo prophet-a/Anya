@@ -8,7 +8,7 @@ class ContextManager:
     """
     Manages conversation context and long-term memory for the chatbot
     """
-    def __init__(self, max_messages=400, memory_file="memory.json", session_timeout_seconds=300):
+    def __init__(self, max_messages=250, memory_file="memory.json", session_timeout_seconds=300):
         self.max_messages = max_messages
         self.memory_file = memory_file
         self.conversations = defaultdict(list)
@@ -17,6 +17,10 @@ class ContextManager:
         self.active_sessions = {}
         # Час в секундах, після якого сесія розмови в групі вважається закінченою
         self.session_timeout = session_timeout_seconds
+        # Додатковий словник для зберігання персоналізованого вводження про користувачів
+        self.user_impressions = {}
+        # Останнє оновлення вражень про користувачів (останні 250 повідомлень)
+        self.last_impression_update = {}
     
     def _load_memory(self):
         """Load memory from file if it exists"""
@@ -62,6 +66,9 @@ class ContextManager:
         # Auto-detect and save important information
         if not is_bot:
             self._auto_detect_important_info(chat_id_str, message)
+            
+            # Check if we have enough messages from this user to generate/update an impression
+            self._maybe_update_user_impression(chat_id_str, user_id, username)
         
         return message_entry
     
@@ -142,12 +149,17 @@ class ContextManager:
                 "user_info": {},
                 "topics_discussed": [],
                 "important_facts": [],
+                "user_impressions": {},
                 "last_interaction": None
             }
         
         # Update the last interaction time
         self.memory[chat_id]["last_interaction"] = datetime.now().isoformat()
         
+        # Make sure user_impressions exists in memory
+        if "user_impressions" not in self.memory[chat_id]:
+            self.memory[chat_id]["user_impressions"] = {}
+            
         # Save memory to file
         self._save_memory()
     
@@ -237,6 +249,7 @@ class ContextManager:
                 "user_info": {},
                 "topics_discussed": [],
                 "important_facts": [],
+                "user_impressions": {},
                 "last_interaction": datetime.now().isoformat()
             }
         
@@ -249,4 +262,119 @@ class ContextManager:
             if value not in self.memory[chat_id_str]["important_facts"]:
                 self.memory[chat_id_str]["important_facts"].append(value)
         
-        self._save_memory() 
+        self._save_memory()
+    
+    def _maybe_update_user_impression(self, chat_id, user_id, username):
+        """
+        Check if we should generate or update an impression about a specific user
+        based on their recent messages
+        """
+        if not user_id:  # Skip if no user ID (e.g., for bot messages)
+            return
+            
+        chat_id_str = str(chat_id)
+        user_id_str = str(user_id)
+        
+        # Get all messages from this user in this chat
+        user_messages = [
+            msg for msg in self.conversations[chat_id_str] 
+            if not msg["is_bot"] and str(msg.get("user_id", "")) == user_id_str
+        ]
+        
+        # If fewer than 10 messages, not enough to form an impression yet
+        if len(user_messages) < 10:
+            return
+            
+        # Check if we've already generated an impression recently
+        user_key = f"{chat_id_str}:{user_id_str}"
+        last_update = self.last_impression_update.get(user_key, None)
+        
+        # Generate a new impression if:
+        # 1. We've never generated one before, or
+        # 2. We have at least 30 new messages since the last update
+        if (last_update is None or 
+            len(user_messages) - last_update >= 30):
+            
+            self._generate_user_impression(chat_id_str, user_id_str, username, user_messages)
+            # Update the counter for when we last generated an impression
+            self.last_impression_update[user_key] = len(user_messages)
+    
+    def _generate_user_impression(self, chat_id, user_id, username, messages):
+        """
+        Generate a personality-infused impression about a user based on their messages
+        and save it to memory
+        """
+        # Get the existing impression if any
+        existing_impression = self.memory[chat_id].get("user_impressions", {}).get(user_id, "")
+        
+        # Prepare data to generate the impression
+        message_texts = [msg["content"] for msg in messages[-50:]]  # Use most recent 50 messages max
+        message_sample = "\n".join(message_texts)
+        
+        # Get message count
+        message_count = len(messages)
+        
+        # Build a prompt that will be used later with Gemini API
+        # We're just storing the data here for now, the actual generation
+        # will happen when needed via the main.py
+        impression_data = {
+            "username": username,
+            "message_count": message_count,
+            "sample": message_sample,
+            "existing_impression": existing_impression,
+            "needs_generation": True,
+            "last_updated": datetime.now().isoformat()
+        }
+        
+        # Store the data for later processing
+        self.user_impressions[f"{chat_id}:{user_id}"] = impression_data
+    
+    def get_user_impression_data(self, chat_id, user_id):
+        """
+        Get the data needed to generate an impression for a specific user
+        Returns None if there's no data or impression needed
+        """
+        user_key = f"{chat_id}:{user_id}"
+        return self.user_impressions.get(user_key, None)
+    
+    def save_generated_impression(self, chat_id, user_id, impression):
+        """
+        Save a generated impression to memory
+        """
+        chat_id_str = str(chat_id)
+        user_id_str = str(user_id)
+        
+        # Ensure we have a user_impressions dictionary in memory
+        if "user_impressions" not in self.memory[chat_id_str]:
+            self.memory[chat_id_str]["user_impressions"] = {}
+            
+        # Save the impression
+        self.memory[chat_id_str]["user_impressions"][user_id_str] = impression
+        
+        # Mark as no longer needing generation
+        user_key = f"{chat_id_str}:{user_id_str}"
+        if user_key in self.user_impressions:
+            self.user_impressions[user_key]["needs_generation"] = False
+            
+        # Save to disk
+        self._save_memory()
+        
+    def get_user_impressions(self, chat_id):
+        """
+        Get all stored impressions for users in a chat
+        """
+        chat_id_str = str(chat_id)
+        return self.memory.get(chat_id_str, {}).get("user_impressions", {})
+        
+    def get_users_needing_impressions(self):
+        """
+        Return a list of chat_id, user_id pairs that need impression generation
+        """
+        needs_impression = []
+        
+        for user_key, data in self.user_impressions.items():
+            if data.get("needs_generation", False):
+                chat_id, user_id = user_key.split(":")
+                needs_impression.append((chat_id, user_id))
+                
+        return needs_impression 
