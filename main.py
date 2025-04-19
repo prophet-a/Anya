@@ -1147,7 +1147,7 @@ def webhook():
         keyword_match = should_respond(message_text) or should_force_respond
         
         # If we shouldn't respond, check if we're in an active session
-        if not keyword_match and is_group:
+        if not keyword_match:
             # Check if this is from a user in an active session
             in_active_session = context_manager.is_session_active(chat_id, user_id)
             
@@ -1164,9 +1164,9 @@ def webhook():
                     return 'OK'
                 
                 # Auto reply to session participants if enabled
-                if CONFIG.get("group_chat_settings", {}).get("auto_reply_to_session_participants", True):
+                if (is_group and CONFIG.get("group_chat_settings", {}).get("auto_reply_to_session_participants", True)) or not is_group:
                     keyword_match = True
-            elif CONFIG.get("group_chat_settings", {}).get("auto_join_session", True) and context_manager.is_session_active(chat_id):
+            elif is_group and CONFIG.get("group_chat_settings", {}).get("auto_join_session", True) and context_manager.is_session_active(chat_id):
                 # Add user to session
                 context_manager.update_session(chat_id, user_id, username)
         
@@ -1259,7 +1259,7 @@ def webhook():
         batch_key = f"{chat_id}:{user_id}"
         current_time = time.time()
         
-        # If this is a message that needs a response, check batching
+        # Check if this is a message that needs a response, check batching
         if keyword_match and CONFIG.get("message_batching", {}).get("enabled", True) and not is_forwarded:
             # Add to batch if there's an active batch for this user in this chat
             if batch_key in message_batches and current_time - message_batches[batch_key]['last_update'] < MESSAGE_BATCH_TIMEOUT:
@@ -1291,13 +1291,19 @@ def webhook():
                 # Clean up the batch
                 del message_batches[batch_key]
                 
-                # Check if session already exists or create one for group chats
+                # Check if session already exists or create one for group and private chats
                 if is_group and CONFIG.get("group_chat_settings", {}).get("session_enabled", True):
                     if not context_manager.is_session_active(chat_id):
                         # Start a new session
                         context_manager.start_session(chat_id, user_id, username)
                     else:
                         # Update existing session
+                        context_manager.update_session(chat_id, user_id, username)
+                elif not is_group:
+                    # For private chats, always maintain a session
+                    if not context_manager.is_session_active(chat_id):
+                        context_manager.start_session(chat_id, user_id, username)
+                    else:
                         context_manager.update_session(chat_id, user_id, username)
                 
                 # If we have multiple messages, combine them for a single response
@@ -1326,10 +1332,18 @@ def webhook():
         # Process the message if we should respond
         if keyword_match:
             try:
-                # Start or update session for group chats
+                # Start or update session for both group chats and private chats
                 if is_group and CONFIG.get("group_chat_settings", {}).get("session_enabled", True):
                     if not context_manager.is_session_active(chat_id):
                         # Start new session
+                        context_manager.start_session(chat_id, user_id, username)
+                    else:
+                        # Update existing session
+                        context_manager.update_session(chat_id, user_id, username)
+                # Handle private chats - always start or update a session
+                elif not is_group:
+                    if not context_manager.is_session_active(chat_id):
+                        # Start new session for private chat
                         context_manager.start_session(chat_id, user_id, username)
                     else:
                         # Update existing session
