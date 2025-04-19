@@ -61,7 +61,7 @@ def generate_user_profile(user_id, client):
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-04-17",
+            model="gemini-2.0-flash",
             contents=prompt,
         )
         
@@ -173,7 +173,7 @@ def generate_relationship_analysis(chat_id, client):
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-04-17",
+            model="gemini-2.0-flash",
             contents=prompt,
         )
         

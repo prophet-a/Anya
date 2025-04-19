@@ -290,7 +290,7 @@ client = genai.Client(
 model="gemini-2.0-flash"
 
 # На нову модель
-model="gemini-2.5-flash-001"
+model="gemini-2.0-flash"
 ```
 
 #### 4. Використання кешування контексту та налаштування параметрів мислення
@@ -300,7 +300,7 @@ model="gemini-2.5-flash-001"
 from google.genai.types import ThinkingConfig, GenerateContentConfig
 
 response = client.models.generate_content(
-    model="gemini-2.5-flash-001",
+    model="gemini-2.0-flash",
     contents=prompt,
     enable_cached_context=True,  # Кешування для економії токенів
     config=GenerateContentConfig(
@@ -312,7 +312,7 @@ response = client.models.generate_content(
 
 # Для більшості задач використовуємо кешування без додаткових витрат на thinking
 response = client.models.generate_content(
-    model="gemini-2.5-flash-001",
+    model="gemini-2.0-flash",
     contents=prompt,
     enable_cached_context=True  # Кешування для економії токенів
 )
