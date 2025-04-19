@@ -10,7 +10,9 @@ class ContextManager:
     """
     def __init__(self, max_messages=250, memory_file="memory.json", session_timeout_seconds=300):
         self.max_messages = max_messages
-        self.memory_file = memory_file
+        # Use /memory directory for storage
+        self.memory_dir = "/memory"
+        self.memory_file = os.path.join(self.memory_dir, memory_file)
         self.conversations = defaultdict(list)
         self.memory = self._load_memory()
         # Зберігання активних сесій розмови в групових чатах
@@ -35,6 +37,9 @@ class ContextManager:
     def _save_memory(self):
         """Save memory to file"""
         try:
+            # Ensure the directory exists
+            os.makedirs(os.path.dirname(self.memory_file), exist_ok=True)
+            
             with open(self.memory_file, 'w', encoding='utf-8') as f:
                 json.dump(self.memory, f, ensure_ascii=False, indent=2)
         except Exception as e:

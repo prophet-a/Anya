@@ -9,6 +9,8 @@ from personality import PERSONALITY
 from context_manager import ContextManager
 from scheduled_messages import ScheduledMessenger
 from context_caching import ContextCache
+from global_memory import GlobalMemory
+import global_analysis
 import time
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -82,6 +84,9 @@ context_manager = ContextManager(
     memory_file=MEMORY_PATH,
     session_timeout_seconds=group_settings.get("session_timeout_seconds", 300)
 )
+
+# Initialize global memory
+global_memory = GlobalMemory(config=CONFIG)
 
 # Initialize context cache
 context_cache = ContextCache(context_manager, CONFIG)
@@ -328,8 +333,9 @@ def process_pending_impressions(max_to_process=3):
     
     return len(pending[:max_to_process])
 
-def get_memory_context(chat_id):
+def get_memory_context(chat_id, user_id=None):
     """Get memory context including user impressions for a specific chat"""
+    # Get local chat-specific memory
     memory = context_manager.get_memory(chat_id)
     if not memory:
         return ""
@@ -358,105 +364,82 @@ def get_memory_context(chat_id):
     user_impressions = memory.get("user_impressions", {})
     if user_impressions:
         memory_context += "\nMy impressions of people in this chat:\n"
-        for user_id, impression in user_impressions.items():
+        for u_id, impression in user_impressions.items():
             username = "Unknown"
             # Try to find the username from conversation history
             for msg in context_manager.conversations.get(str(chat_id), []):
-                if str(msg.get("user_id", "")) == user_id and msg.get("username"):
+                if str(msg.get("user_id", "")) == u_id and msg.get("username"):
                     username = msg["username"]
                     break
                     
             memory_context += f"- {username}: {impression}\n"
     
+    # Get global memory context if a user_id is provided
+    if user_id:
+        global_context = global_memory.get_global_context(chat_id, user_id)
+        if global_context:
+            memory_context += "\n" + global_context
+    
     return memory_context
 
-def generate_response(user_input, chat_id):
-    """Generate response using Gemini API with conversation summarization"""
-    # Check for token usage first
-    check_token_usage()
-    
-    # Check if summarization is enabled
-    if context_cache.enabled and context_cache.summarization_enabled:
-        # Check if we need to create or update summary
-        needs_summary = context_cache.should_create_summary(chat_id)
-        if needs_summary:
+def generate_response(user_input, chat_id, user_id=None, username=None):
+    """Generate a response using Gemini API"""
+    # Check if summarization is needed first
+    if context_cache.should_create_summary(chat_id):
+        try:
             summary = generate_conversation_summary(chat_id)
             if summary:
-                # Log token usage for summary generation
-                log_token_usage(summary, "summarized")
+                context_cache.save_conversation_summary(chat_id, summary)
+                print(f"Generated conversation summary for chat {chat_id}")
+        except Exception as e:
+            print(f"Error generating conversation summary: {str(e)}")
     
-    # Get conversation context
-    conversation_context = ""
-    if context_settings.get("enabled", True):
-        conversation_context = context_manager.get_conversation_context(chat_id)
+    # Get conversation history
+    conversation_history = context_manager.get_conversation_context(chat_id)
     
-    # Get summary if enabled
-    summary = None
-    if context_cache.enabled and context_cache.summarization_enabled:
-        summary = context_cache.get_conversation_summary(chat_id)
+    # Get memory context (including global user context if user_id is provided)
+    memory_context = get_memory_context(chat_id, user_id)
     
-    # Get memory context
-    memory_context = ""
-    if context_settings.get("memory_enabled", True):
-        memory_context = get_memory_context(chat_id)
+    # Get summary if available
+    conversation_summary = context_cache.get_conversation_summary(chat_id)
     
-    # Build complete prompt
-    full_traditional_prompt = PERSONALITY + "\n\n"
-    actual_prompt = PERSONALITY + "\n\n"
+    # Build the prompt
+    prompt = f"{PERSONALITY}\n\n"
     
     if memory_context:
-        full_traditional_prompt += memory_context + "\n\n"
-        actual_prompt += memory_context + "\n\n"
+        prompt += f"[Memory Context]\n{memory_context}\n\n"
     
-    # Always add the full conversation context to our traditional measurement
-    if conversation_context:
-        full_traditional_prompt += conversation_context + "\n\n"
-    
-    # For the actual prompt, use summary if available and limit history
-    if summary:
-        actual_prompt += f"Previous conversation summary:\n{summary}\n\n"
-        
-        # Limit history to last 20 messages if we have a summary
-        if conversation_context:
-            conversation_lines = conversation_context.split('\n')
-            if len(conversation_lines) > 20:
-                conversation_context_short = "Recent messages:\n" + "\n".join(conversation_lines[-20:])
-                actual_prompt += conversation_context_short + "\n\n"
-            else:
-                actual_prompt += conversation_context + "\n\n"
+    if conversation_summary:
+        prompt += f"[Conversation Summary]\n{conversation_summary}\n\n"
+        # If we have a summary, we can use a shorter conversation history (last 10 messages)
+        short_history = "\n".join(conversation_history.split("\n")[-20:]) if conversation_history else ""
+        prompt += f"[Recent Messages]\n{short_history}\n\n"
+        log_token_usage(prompt, "summarized")
     else:
-        # No summary available, use full context
-        if conversation_context:
-            actual_prompt += conversation_context + "\n\n"
+        # Otherwise use the full conversation history
+        prompt += f"[Conversation History]\n{conversation_history}\n\n"
+        log_token_usage(prompt, "traditional")
     
-    # Add user message to both prompts
-    full_traditional_prompt += "User message:\n" + user_input
-    actual_prompt += "User message:\n" + user_input
+    prompt += f"User message:\n{user_input}"
     
-    # Log token usage for both approaches
-    log_token_usage(full_traditional_prompt, "traditional")
+    # Log estimated token usage for input
+    log_token_usage(prompt, "input")
     
-    if summary:
-        log_token_usage(actual_prompt, "summarized")
-    
-    # Log input tokens specifically (to server log only)
-    input_tokens = log_token_usage(actual_prompt, "input")
-    print(f"[SERVER LOG] Request tokens: {input_tokens}")
-    
+    # Generate the response with Gemini
     try:
         response = client.models.generate_content(
             model="gemini-2.0-flash",
-            contents=actual_prompt
+            contents=prompt
         )
         
-        # Log output tokens (to server log only)
-        output_tokens = log_token_usage(response.text, "output")
-        print(f"[SERVER LOG] Response tokens: {output_tokens}")
+        # Log estimated token usage for output
+        log_token_usage(response.text, "output")
         
         return response.text
+        
     except Exception as e:
         print(f"Error generating response: {str(e)}")
-        return "Ой, щось мій мозок глючить... Давай ще раз спробуємо?"
+        return "вибач, щось пішло не так. спробуй ще раз через хвилину"
 
 def should_respond(text):
     """Check if the message contains keywords that should trigger a response"""
@@ -760,179 +743,300 @@ def generate_conversation_summary(chat_id):
         print(f"Error generating summary: {str(e)}")
         return None
 
+def handle_global_memory_command(chat_id, command_text):
+    """Handle global memory management commands"""
+    parts = command_text.split()
+    if len(parts) < 2:
+        return "Використання: /global_memory [users|profile|thresholds]"
+    
+    action = parts[1].lower()
+    
+    if action == "users":
+        # List all users in global memory
+        users = global_memory.users
+        if not users:
+            return "У глобальній пам'яті ще немає користувачів"
+        
+        response = "👥 *Користувачі в глобальній пам'яті:*\n\n"
+        for user_id, user_data in users.items():
+            username = user_data.get("username", "Unknown")
+            total_messages = user_data.get("total_messages", 0)
+            active_chats = len(user_data.get("chats", {}))
+            response += f"*{username}* (ID: {user_id})\n"
+            response += f"Повідомлень: {total_messages}, Активний в {active_chats} чатах\n\n"
+        
+        return response
+    
+    elif action == "profile":
+        # Get profile for a specific user
+        if len(parts) < 3:
+            return "Використання: /global_memory profile [user_id|username]"
+        
+        search_term = parts[2]
+        found_user = None
+        
+        # Try to find user by ID first
+        if search_term in global_memory.users:
+            found_user = global_memory.users[search_term]
+        else:
+            # Try to find by username
+            for user_id, user_data in global_memory.users.items():
+                if user_data.get("username", "").lower() == search_term.lower():
+                    found_user = user_data
+                    break
+        
+        if not found_user:
+            return f"Користувача з ID або ім'ям '{search_term}' не знайдено"
+        
+        # Format the user profile
+        user_id = found_user.get("user_id", "Unknown")
+        username = found_user.get("username", "Unknown")
+        total_messages = found_user.get("total_messages", 0)
+        profile = found_user.get("profile", {})
+        
+        response = f"👤 *Профіль для {username}*\n\n"
+        response += f"ID: {user_id}\n"
+        response += f"Загальна кількість повідомлень: {total_messages}\n\n"
+        
+        if profile:
+            if "personality" in profile:
+                response += f"*Особистість:* {profile['personality']}\n"
+            if "interests" in profile and profile["interests"]:
+                response += f"*Інтереси:* {', '.join(profile['interests'])}\n"
+            if "behavior_patterns" in profile and profile["behavior_patterns"]:
+                response += f"*Поведінка:* {', '.join(profile['behavior_patterns'])}\n"
+            if "relationship_with_bot" in profile:
+                response += f"*Відносини зі мною:* {profile['relationship_with_bot']}\n\n"
+        
+        # Add impressions
+        impressions = found_user.get("impressions", {})
+        if impressions:
+            response += "*Мої враження:*\n"
+            for timestamp, impression in sorted(impressions.items(), reverse=True)[:3]:
+                date = timestamp.split("T")[0]
+                response += f"- [{date}] {impression}\n"
+        
+        # Add active chats
+        chats = found_user.get("chats", {})
+        if chats:
+            response += "\n*Активний в чатах:*\n"
+            for chat_id, chat_data in chats.items():
+                msg_count = chat_data.get("message_count", 0)
+                response += f"- Чат {chat_id}: {msg_count} повідомлень\n"
+        
+        return response
+    
+    elif action == "thresholds":
+        # Get or set analysis thresholds
+        if len(parts) < 3:
+            # Just show current thresholds
+            thresholds = global_memory.analysis_thresholds
+            response = "*Налаштування аналізу:*\n\n"
+            for key, value in thresholds.items():
+                response += f"{key}: {value}\n"
+            return response
+        
+        # Set a specific threshold
+        if len(parts) < 4:
+            return "Використання: /global_memory thresholds [key] [value]"
+        
+        threshold_key = parts[2]
+        try:
+            threshold_value = int(parts[3])
+        except ValueError:
+            return f"Значення має бути цілим числом"
+        
+        # Update threshold
+        if threshold_key in global_memory.analysis_thresholds:
+            updated = global_memory.update_thresholds({threshold_key: threshold_value})
+            return f"Оновлено налаштування: {threshold_key} = {threshold_value}"
+        else:
+            return f"Невідомий параметр: {threshold_key}"
+    
+    return "Невідома команда. Використання: /global_memory [users|profile|thresholds]"
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming webhook from Telegram"""
     global message_batches
     
-    # Check token usage regularly
+    data = request.get_json()
+    print(f"Received webhook data")
+    
+    # Periodically check token usage
     check_token_usage()
     
-    data = request.get_json()
+    # Process pending user impressions in the background (rate-limited)
+    impressions_processed = process_pending_impressions()
+    if impressions_processed > 0:
+        print(f"Processed {impressions_processed} user impressions")
     
-    # Debugging: Log the incoming webhook data
-    print(f"Webhook received: {data}")
-    
-    # Get the update_id
-    update_id = data.get('update_id')
+    # Also process global memory analyses
+    try:
+        analysis_results = global_analysis.process_pending_analyses(client)
+        if analysis_results["profiles_processed"] > 0 or analysis_results["relationships_processed"] > 0:
+            print(f"Processed global analyses: {analysis_results}")
+    except Exception as e:
+        print(f"Error processing global analyses: {str(e)}")
     
     # Check if this is a message update
-    if 'message' in data and 'text' in data['message']:
-        chat_id = data['message']['chat']['id']
-        user_id = data['message'].get('from', {}).get('id')
-        username = data['message'].get('from', {}).get('username', '')
-        user_input = data['message']['text']
-        message_id = data['message'].get('message_id', 0)
+    if 'message' not in data:
+        return 'OK'
+    
+    message = data['message']
+    
+    # Extract message information
+    chat_id = message.get('chat', {}).get('id')
+    user_id = message.get('from', {}).get('id')
+    username = message.get('from', {}).get('username', message.get('from', {}).get('first_name', 'User'))
+    message_id = message.get('message_id', 0)
+    
+    # Skip messages from the bot itself
+    if message.get('from', {}).get('is_bot', False):
+        return 'OK'
+    
+    # Check if this is a group chat
+    is_group = message.get('chat', {}).get('type') in ['group', 'supergroup']
+    
+    # Update scheduled messenger if enabled
+    if scheduled_messenger and chat_id:
+        scheduled_messenger.register_chat(chat_id, "group" if is_group else "private")
+        scheduled_messenger.update_chat_activity(chat_id)
+    
+    # Process message text
+    if 'text' in message:
+        message_text = message['text']
         
-        # Check if message is in a group
-        is_group = data['message']['chat']['type'] in ['group', 'supergroup']
+        # Process global user memory
+        global_memory.process_message(chat_id, user_id, username, message_text)
         
-        # Check if this is a reply to another message
-        reply_context = ""
+        # Add message to context manager
+        context_manager.add_message(chat_id, user_id, username, message_text, is_bot=False, is_group=is_group)
+        
+        # Check if message is a reply to the bot
         is_reply_to_bot = False
+        reply_context = ""
         
-        if 'reply_to_message' in data['message'] and 'text' in data['message']['reply_to_message']:
-            replied_username = data['message']['reply_to_message'].get('from', {}).get('username', 'Unknown')
-            replied_text = data['message']['reply_to_message']['text']
+        if 'reply_to_message' in message and 'text' in message['reply_to_message']:
+            replied_username = message['reply_to_message'].get('from', {}).get('username', 'Unknown')
+            replied_text = message['reply_to_message']['text']
             
             # Check if the replied message was from the bot
-            if 'from' in data['message']['reply_to_message']:
-                bot_id = data['message']['reply_to_message']['from'].get('username')
+            if 'from' in message['reply_to_message']:
+                bot_id = message['reply_to_message']['from'].get('username')
                 is_reply_to_bot = bot_id and CONFIG['bot_name'].lower() in bot_id.lower()
             
             # Add reply context if enabled
-            if group_settings.get("include_reply_context", True):
-                # Format the replied message to add to the user input
+            if CONFIG.get("group_chat_settings", {}).get("include_reply_context", True):
                 reply_context = f"[У відповідь на повідомлення від {replied_username}: \"{replied_text}\"] "
-                # Modify user input to include context of the message being replied to
-                user_input = reply_context + user_input
+                message_text = reply_context + message_text
         
-        # Update scheduled message activity tracking if enabled
-        if scheduled_messenger:
-            # Register this chat for potential scheduled messages
-            chat_type = data['message']['chat']['type']
-            scheduled_messenger.register_chat(chat_id, chat_type)
-            # Update activity timestamp to prevent scheduled messages during active conversation
-            scheduled_messenger.update_chat_activity(chat_id)
+        # Handle memory commands
+        if message_text.startswith('/memory'):
+            response = handle_memory_command(chat_id, message_text)
+            send_message(chat_id, response)
+            context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
+            return 'OK'
         
-        # Add user message to context
-        context_manager.add_message(chat_id, user_id, username, user_input, is_bot=False, is_group=is_group)
+        # Handle global memory commands
+        if message_text.startswith('/global_memory'):
+            response = handle_global_memory_command(chat_id, message_text)
+            send_message(chat_id, response)
+            context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
+            return 'OK'
         
-        # Check if bot should force respond to a reply
-        should_force_respond = is_reply_to_bot and CONFIG["response_settings"].get("respond_to_replies", True)
+        # Handle schedule commands
+        if message_text.startswith('/schedule'):
+            response = handle_schedule_command(chat_id, message_text)
+            send_message(chat_id, response)
+            context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
+            return 'OK'
+        
+        # Check for predefined commands
+        commands = CONFIG["response_settings"].get("commands", {})
+        for cmd, response in commands.items():
+            if message_text.startswith(cmd):
+                send_message(chat_id, response)
+                context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
+                return 'OK'
         
         # Determine if bot should respond
-        if (is_group and not CONFIG["response_settings"]["respond_in_groups"]):
-            return jsonify({"status": "ok"})
+        should_force_respond = is_reply_to_bot and CONFIG["response_settings"].get("respond_to_replies", True)
+        keyword_match = should_respond(message_text) or should_force_respond
         
-        try:
-            # Handle memory commands
-            if user_input.startswith('/memory'):
-                response = handle_memory_command(chat_id, user_input)
-                send_message(chat_id, response)
-                context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
-                return jsonify({"status": "ok"})
+        # If we shouldn't respond, check if we're in an active session
+        if not keyword_match and is_group:
+            # Check if this is from a user in an active session
+            in_active_session = context_manager.is_session_active(chat_id, user_id)
             
-            # Handle scheduled message commands
-            if user_input.startswith('/schedule'):
-                response = handle_schedule_command(chat_id, user_input)
-                send_message(chat_id, response)
-                context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
-                return jsonify({"status": "ok"})
-            
-            # Check for predefined commands
-            commands = CONFIG["response_settings"].get("commands", {})
-            command_found = False
-            
-            for cmd, response in commands.items():
-                if user_input.startswith(cmd):
-                    send_message(chat_id, response)
-                    # Add bot response to context
-                    context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
-                    command_found = True
-                    break
-            
-            if command_found:
-                return jsonify({"status": "ok"})
-            
-            # Check if message contains a keyword or if it's a forced response
-            keyword_match = should_respond(user_input) or should_force_respond
-            
-            # Create batch key for chat+user combination
-            batch_key = f"{chat_id}:{user_id}"
-            current_time = time.time()
-            
-            # If this is a message with a keyword, check batching
-            if keyword_match and MESSAGE_BATCH_TIMEOUT > 0:  # Only batch if enabled
-                # Add to batch if there's an active batch for this user in this chat
-                if batch_key in message_batches and current_time - message_batches[batch_key]['last_update'] < MESSAGE_BATCH_TIMEOUT:
-                    # Add to existing batch
-                    message_batches[batch_key]['messages'].append(user_input)
-                    message_batches[batch_key]['message_ids'].append(message_id)
-                    message_batches[batch_key]['last_update'] = current_time
-                    # Return immediately to let more messages accumulate if they're coming
-                    return jsonify({"status": "ok", "action": "batched"})
-                else:
-                    # Create new batch
-                    message_batches[batch_key] = {
-                        'messages': [user_input],
-                        'message_ids': [message_id],
-                        'username': username,
-                        'is_group': is_group,
-                        'created': current_time,
-                        'last_update': current_time
-                    }
-                    
-                    # Wait for potential additional messages
-                    time.sleep(MESSAGE_BATCH_TIMEOUT)
-                    
-                    # Get all messages in batch
-                    batched_messages = message_batches[batch_key]['messages']
-                    
-                    # Clean up the batch
-                    del message_batches[batch_key]
-                    
-                    # Check if session already exists or create one for group chats
-                    if is_group and group_settings.get("session_enabled", True):
-                        if not context_manager.is_session_active(chat_id):
-                            # Start a new session
-                            context_manager.start_session(chat_id, user_id, username)
-                        else:
-                            # Update existing session
-                            context_manager.update_session(chat_id, user_id, username)
-                    
-                    # If we have multiple messages, combine them for a single response
-                    if len(batched_messages) > 1:
-                        combined_input = "Користувач переслав кілька повідомлень:\n\n" + "\n".join([f"- {msg}" for msg in batched_messages])
-                        response_text = generate_response(combined_input, chat_id)
-                        
-                        # Send typing action with message length for dynamic typing duration
-                        send_typing_action(chat_id, response_text)
-                        
-                        send_message(chat_id, response_text)
-                        
-                        # Add bot response to context
-                        context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
-                        
-                        return jsonify({"status": "ok", "action": "batch_processed"})
-                    else:
-                        # Single message processing continues with normal flow
-                        user_input = batched_messages[0]
-            
-            # Group chat session handling
-            if is_group and group_settings.get("session_enabled", True):
-                # If message matches a keyword or is a reply to bot, start a new session or update existing one
-                if keyword_match:
-                    # Check if there's already an active session
+            if in_active_session:
+                # Update session
+                context_manager.update_session(chat_id, user_id, username)
+                
+                # Check if this is a command to end the session
+                if is_session_end_command(message_text):
+                    context_manager.end_session(chat_id)
+                    response_text = "давай, пінганеш"
+                    send_message(chat_id, response_text)
+                    context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
+                    return 'OK'
+                
+                # Auto reply to session participants if enabled
+                if CONFIG.get("group_chat_settings", {}).get("auto_reply_to_session_participants", True):
+                    keyword_match = True
+            elif CONFIG.get("group_chat_settings", {}).get("auto_join_session", True) and context_manager.is_session_active(chat_id):
+                # Add user to session
+                context_manager.update_session(chat_id, user_id, username)
+        
+        # Create batch key for chat+user combination for message batching
+        batch_key = f"{chat_id}:{user_id}"
+        current_time = time.time()
+        
+        # If this is a message that needs a response, check batching
+        if keyword_match and CONFIG.get("message_batching", {}).get("enabled", True):
+            # Add to batch if there's an active batch for this user in this chat
+            if batch_key in message_batches and current_time - message_batches[batch_key]['last_update'] < MESSAGE_BATCH_TIMEOUT:
+                # Add to existing batch
+                message_batches[batch_key]['messages'].append(message_text)
+                message_batches[batch_key]['message_ids'].append(message_id)
+                message_batches[batch_key]['last_update'] = current_time
+                # Return immediately to let more messages accumulate if they're coming
+                return 'OK'
+            else:
+                # Create new batch
+                message_batches[batch_key] = {
+                    'messages': [message_text],
+                    'message_ids': [message_id],
+                    'username': username,
+                    'user_id': user_id,
+                    'is_group': is_group,
+                    'created': current_time,
+                    'last_update': current_time
+                }
+                
+                # Wait for potential additional messages
+                time.sleep(MESSAGE_BATCH_TIMEOUT)
+                
+                # Get all messages in batch
+                batched_messages = message_batches[batch_key]['messages']
+                batch_user_id = message_batches[batch_key]['user_id']
+                
+                # Clean up the batch
+                del message_batches[batch_key]
+                
+                # Check if session already exists or create one for group chats
+                if is_group and CONFIG.get("group_chat_settings", {}).get("session_enabled", True):
                     if not context_manager.is_session_active(chat_id):
                         # Start a new session
                         context_manager.start_session(chat_id, user_id, username)
                     else:
                         # Update existing session
                         context_manager.update_session(chat_id, user_id, username)
-                    
-                    # Generate response
-                    response_text = generate_response(user_input, chat_id)
+                
+                # If we have multiple messages, combine them for a single response
+                if len(batched_messages) > 1:
+                    combined_input = "Користувач переслав кілька повідомлень:\n\n" + "\n".join([f"- {msg}" for msg in batched_messages])
+                    response_text = generate_response(combined_input, chat_id, batch_user_id, username)
                     
                     # Send typing action with message length for dynamic typing duration
                     send_typing_action(chat_id, response_text)
@@ -942,68 +1046,39 @@ def webhook():
                     # Add bot response to context
                     context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
                     
-                    return jsonify({"status": "ok"})
-                
-                # Check if this is from a user in an active session
-                elif context_manager.is_session_active(chat_id, user_id):
-                    # Update session
-                    context_manager.update_session(chat_id, user_id, username)
-                    
-                    # Check if this is a command to end the session
-                    if is_session_end_command(user_input):
-                        context_manager.end_session(chat_id)
-                        response_text = "давай, пінганеш"
-                        send_message(chat_id, response_text)
-                        context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
-                        return jsonify({"status": "ok"})
-                    
-                    # Auto reply to session participants if enabled
-                    if group_settings.get("auto_reply_to_session_participants", True):
-                        # Generate response
-                        response_text = generate_response(user_input, chat_id)
-                        
-                        # Send typing action with message length for dynamic typing duration
-                        send_typing_action(chat_id, response_text)
-                        
-                        send_message(chat_id, response_text)
-                        
-                        # Add bot response to context
-                        context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
-                        
-                        return jsonify({"status": "ok"})
-                
-                # If auto join is enabled, add user to session if others are talking to the bot
-                elif group_settings.get("auto_join_session", True) and context_manager.is_session_active(chat_id):
-                    # Add user to session
-                    context_manager.update_session(chat_id, user_id, username)
-                    
-                    # We don't respond here, just added them to the session
-                    return jsonify({"status": "ok"})
-            
-            # If not a group chat or sessions disabled, check if should respond
-            if not is_group or not group_settings.get("session_enabled", True):
-                if keyword_match:
-                    # Generate response
-                    response_text = generate_response(user_input, chat_id)
-                    
-                    # Send typing action with message length for dynamic typing duration
-                    send_typing_action(chat_id, response_text)
-                    
-                    send_message(chat_id, response_text)
-                    
-                    # Add bot response to context
-                    context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
-            
-            # Process any pending impressions (max 2 per request to avoid timeouts)
-            try:
-                process_pending_impressions(max_to_process=2)
-            except Exception as e:
-                print(f"Error processing impressions: {str(e)}")
+                    return 'OK'
+                else:
+                    # Single message processing continues with normal flow
+                    message_text = batched_messages[0]
         
-        except Exception as e:
-            send_message(chat_id, f"Ой, щось поламалось(( Тех.підтримка вже розбирається: {str(e)}")
+        # Process the message if we should respond
+        if keyword_match:
+            try:
+                # Start or update session for group chats
+                if is_group and CONFIG.get("group_chat_settings", {}).get("session_enabled", True):
+                    if not context_manager.is_session_active(chat_id):
+                        # Start new session
+                        context_manager.start_session(chat_id, user_id, username)
+                    else:
+                        # Update existing session
+                        context_manager.update_session(chat_id, user_id, username)
+                
+                # Send typing indicator
+                send_typing_action(chat_id)
+                
+                # Generate response using user context
+                response_text = generate_response(message_text, chat_id, user_id, username)
+                
+                # Send response
+                send_message(chat_id, response_text)
+                
+                # Add bot's response to context
+                context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
+            except Exception as e:
+                print(f"Error generating response: {str(e)}")
+                send_message(chat_id, "вибач, щось пішло не так. спробуй ще раз через хвилину")
     
-    return jsonify({"status": "ok"})
+    return 'OK'
 
 @app.route('/')
 def index():

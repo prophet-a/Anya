@@ -36,7 +36,8 @@
     "commands": {
       "/start": "Здарова бандіти",
       "/help": "Який хелп, чел? Просто пиши — я тут",
-      "/schedule": "Керуй запланованими повідомленнями через /schedule status|on|off"
+      "/schedule": "Керуй запланованими повідомленнями через /schedule status|on|off",
+      "/global_memory": "Доступ до глобальної пам'яті: /global_memory users|profile|thresholds"
     }
   },
   "context_settings": {
@@ -53,6 +54,18 @@
       "enabled": true,
       "messages_between_updates": 10,
       "hours_between_updates": 1
+    }
+  },
+  "global_memory_settings": {
+    "enabled": true,
+    "memory_file": "global_memory.json",
+    "analysis_thresholds": {
+      "messages_for_user_update": 100,
+      "messages_for_chat_update": 100,
+      "messages_for_relationship_update": 100
+    },
+    "impression_history": {
+      "max_saved_impressions": 5
     }
   },
   "group_chat_settings": {
