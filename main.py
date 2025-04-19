@@ -227,7 +227,7 @@ def check_token_usage():
         # Save token usage stats to file
         save_token_usage()
 
-def send_message(chat_id, text):
+def send_message(chat_id, text, reply_to_message_id=None):
     """Send message to Telegram chat"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -235,6 +235,10 @@ def send_message(chat_id, text):
         "text": text,
         "parse_mode": "Markdown"
     }
+    # Add reply parameter if provided
+    if reply_to_message_id:
+        payload["reply_to_message_id"] = reply_to_message_id
+        
     response = requests.post(url, json=payload)
     return response.json()
 
@@ -870,60 +874,63 @@ def should_send_followup_message(chat_id, user_id, previous_response):
     """
     # Get conversation history for analysis
     conversation = context_manager.get_conversation_context(chat_id)
-    
+
     # Analyze last few exchanges
     prompt = f"""
     {PERSONALITY}
-    
-    Тобі треба вирішити, чи варто мені надіслати *додаткове*, коротке повідомлення *після* моєї попередньої відповіді. **Роби це рідко**, лише якщо це *дійсно* покращить розмову.
+
+    Тобі треба вирішити, чи варто мені надіслати *додаткове*, коротке повідомлення *після* моєї попередньої відповіді. **Будь більш схильною до надсилання**, якщо це допоможе розмові бути більш живою та в моєму стилі.
 
     Нещодавня розмова:
     {conversation}
 
     Моя попередня відповідь: "{previous_response}"
 
-    Проаналізуй мою попередню відповідь. Чи є *дуже вагома* причина додати ще щось коротке? **За замовчуванням відповідь - НІ.**
+    Проаналізуй мою попередню відповідь. Чи є гарна нагода додати щось коротке та доречне?
 
-    **ВАГОМІ причини надіслати (використовуй обережно):**
-    1. Моя відповідь була *дуже* короткою і натякає на продовження, але не розвинула думку.
-    2. Я поділилася чимось дуже особистим/цікавим, що можна *коротко* доповнити пов'язаною, несподіваною деталлю.
+    **ПРИЧИНИ НАДІСЛАТИ (будь більш схильною):**
+    1. Моя відповідь була *дуже* короткою (1 речення) і не завершеною, натякає на продовження.
+    2. Я поділилася чимось особистим/цікавим/дивним, і можна *коротко* додати якусь деталь чи пов'язану думку в моєму стилі.
+    3. Додаткове повідомлення зробить розмову більш природною, схожою на реальне спілкування.
+    4. Питання було риторичним або відповідь була трохи сухою, можна додати емоції.
 
-    **НЕ надсилай додаткове повідомлення, якщо:**
-    1. Моя попередня відповідь була **вичерпною, завершеною або достатньо довгою** (більше 2-3 речень).
-    2. Я **вже поставила питання** у попередній відповіді.
-    3. Розмова **формальна**, ділова або відповідь на конкретну команду/інструкцію.
-    4. Попередня відповідь **не містить нічого**, що потребує негайного доповнення.
-    5. Ти **не впевнена**, чи це доречно. Краще промовчати.
+    **НЕ НАДСИЛАЙ, ЯКЩО:**
+    1. Моя попередня відповідь була **довгою та вичерпною** (3+ речення).
+    2. Я **вже поставила пряме питання** у попередній відповіді.
+    3. Розмова **дуже формальна** або відповідь на команду (/memory, /help тощо).
+    4. Попередня відповідь **чітко завершила тему**.
+    5. Ти **сильно сумніваєшся**.
 
     **Поверни ТІЛЬКИ JSON об'єкт** з такими полями:
     `{{"should_send": true/false, "reason": "дуже коротке пояснення, чому ТАК або НІ", "delay_seconds": <ціле число секунд 1-5>}}`
-    **Важливо: Поле "should_send" має бути `false` за замовчуванням.**
+    **Важливо: Поле "should_send" все ще має бути `false` за замовчуванням, але будь менш консервативною.**
     """
-    
+
     # Log token usage for analysis request
     log_token_usage(prompt, "input")
-    
+
     try:
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=prompt,
         )
-        
+
         # Log token usage for analysis response
         log_token_usage(response.text, "output")
-        
+
         # Extract JSON from response
         import json
         import re
-        
+
         # Find JSON pattern in the response
         json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
         if json_match:
             analysis = json.loads(json_match.group(0))
+            print(f"[SERVER LOG] Follow-up Analysis: {analysis}") # Log analysis result
             return analysis.get("should_send", False), analysis.get("delay_seconds", 2)
-        
+
         return False, 0
-    
+
     except Exception as e:
         print(f"Error analyzing follow-up potential: {str(e)}")
         return False, 0
@@ -1003,21 +1010,21 @@ def process_followup_queue():
     """Process any pending follow-up messages"""
     current_time = time.time()
     keys_to_remove = []
-    
+
     for key, data in list(followup_queue.items()): # Use list() for safe iteration while modifying
         # Check if enough time has passed since scheduling to perform the analysis
         # Add a small initial delay (e.g., 5 seconds) before even checking
-        initial_delay = 5 
+        initial_delay = 5
         if current_time >= data["scheduled_time"] + initial_delay:
             try:
                 chat_id = data["chat_id"]
                 user_id = data["user_id"]
                 username = data["username"]
                 previous_response = data["previous_response"]
-                
-                # --- Moved check here --- 
+
+                # --- Moved check here ---
                 should_send, check_delay_seconds = should_send_followup_message(chat_id, user_id, previous_response)
-                
+
                 if should_send:
                      # Check if enough *additional* time has passed based on the check_delay_seconds
                      if current_time >= data["scheduled_time"] + initial_delay + check_delay_seconds:
@@ -1026,16 +1033,16 @@ def process_followup_queue():
                         if followup_text:
                             # Send typing indication
                             send_typing_action(chat_id, followup_text)
-                            
-                            # Send the follow-up message
-                            send_message(chat_id, followup_text)
-                            
+
+                            # Send the follow-up message WITHOUT replying
+                            send_message(chat_id, followup_text, reply_to_message_id=None)
+
                             # Add the follow-up to context
                             is_group = context_manager.is_group_chat(chat_id)
                             context_manager.add_message(chat_id, None, CONFIG["bot_name"], followup_text, is_bot=True, is_group=is_group)
-                            
+
                             print(f"[SERVER LOG] Sent follow-up message to chat {chat_id}")
-                        
+
                         # Mark for removal after sending (or trying to send)
                         keys_to_remove.append(key)
                      # else: Not enough time passed yet, keep in queue
@@ -1043,18 +1050,19 @@ def process_followup_queue():
                     # If should_send is false, remove from queue immediately
                     print(f"[SERVER LOG] Follow-up for chat {chat_id} deemed unnecessary.")
                     keys_to_remove.append(key)
-                # --- End moved check --- 
-                
+                # --- End moved check ---
+
             except Exception as e:
                 print(f"[SERVER LOG] Error processing follow-up for key {key}: {str(e)}")
                 # Remove failing task to prevent infinite loops
                 keys_to_remove.append(key)
-            
-    
+
+
     # Clean up processed items
     for key in keys_to_remove:
-        del followup_queue[key]
-    
+        if key in followup_queue: # Check if key still exists before deleting
+             del followup_queue[key]
+
     return len(keys_to_remove)
 
 # Function to run background tasks in a separate thread
@@ -1150,7 +1158,7 @@ def generate_and_send_personal_note(chat_id, user_id, username, memory_context, 
                  contents=personal_prompt,
              )
              personal_note = client_response.text.strip()
-             # Send the note as a separate message
+             # Send the note as a separate message (without reply)
              send_message(chat_id, personal_note)
              print(f"[SERVER LOG] Sent personal note to {username} in chat {chat_id}")
         else:
@@ -1220,7 +1228,7 @@ def handle_whoami_command(chat_id, user_id, username):
     response += "*Особисте від мене:*\n"
     response += "(Зараз спробую згадати щось особливе...) \n\n"
     
-    # Send the initial response without the note
+    # Send the initial response without the note (without reply)
     send_message(chat_id, response)
     # Get the text sent, excluding the placeholder part for context logging
     sent_text = response.replace("*(Зараз спробую згадати щось особливе...) \n\n*","")
@@ -1244,7 +1252,10 @@ def handle_help_command(chat_id):
     
     response += "\nТакож можеш просто написати моє ім'я і я відповім 🙂"
     
-    return response
+    # Send the help message without reply
+    send_message(chat_id, response)
+    context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=context_manager.is_group_chat(chat_id))
+    return None # Indicate message was sent internally
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -1271,7 +1282,7 @@ def webhook():
     chat_id = message.get('chat', {}).get('id')
     user_id = message.get('from', {}).get('id')
     username = message.get('from', {}).get('username', message.get('from', {}).get('first_name', 'User'))
-    message_id = message.get('message_id', 0)
+    message_id = message.get('message_id', 0) # Get message_id for replies
     
     # Skip messages from the bot itself
     if message.get('from', {}).get('is_bot', False):
@@ -1301,11 +1312,16 @@ def webhook():
         # Check if message is a reply to the bot
         is_reply_to_bot = False
         reply_context = ""
+        triggering_message_id = message_id # Default to current message_id
         
         if 'reply_to_message' in message and 'text' in message['reply_to_message']:
+            # Keep track of the ID of the message the user replied to
+            # We might want to reply to the user's message, not the message they replied to
+            # triggering_message_id = message['reply_to_message'].get('message_id', message_id)
+
             replied_username = message['reply_to_message'].get('from', {}).get('username', 'Unknown')
             replied_text = message['reply_to_message']['text']
-            
+
             # Check if the replied message was from the bot
             if 'from' in message['reply_to_message']:
                 # Use bot user ID if available, otherwise compare names/usernames loosely
@@ -1318,88 +1334,91 @@ def webhook():
                     replied_bot_firstname = replied_user_info.get('first_name', '').lower()
                     if bot_username_from_config in replied_bot_username or bot_username_from_config in replied_bot_firstname:
                         is_reply_to_bot = True
-            
+
             # Add reply context if enabled
             if CONFIG.get("group_chat_settings", {}).get("include_reply_context", True):
                 reply_context = f"[У відповідь на повідомлення від {replied_username}: \"{replied_text}\"] "
                 message_text = reply_context + message_text
-                
+
         # Handle /help command
         if message_text.startswith('/help'):
-            response = handle_help_command(chat_id)
-            if response: # Ensure there is a response to send
-                 send_message(chat_id, response)
-                 context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
+            # This command now sends its own message and returns None
+            handle_help_command(chat_id)
             return 'OK'
-        
+
         # Handle /whoami command
         if message_text.startswith('/whoami'):
             # This command now sends its own message(s) and returns None
             handle_whoami_command(chat_id, user_id, username)
             return 'OK'
-        
+
         # Handle memory commands
         if message_text.startswith('/memory'):
             response = handle_memory_command(chat_id, message_text)
+            # Send command response without reply
             send_message(chat_id, response)
             context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
             return 'OK'
-        
+
         # Handle global memory commands
         if message_text.startswith('/global_memory'):
             response = handle_global_memory_command(chat_id, message_text)
+            # Send command response without reply
             send_message(chat_id, response)
             context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
             return 'OK'
-        
+
         # Handle schedule commands
         if message_text.startswith('/schedule'):
             response = handle_schedule_command(chat_id, message_text)
+            # Send command response without reply
             send_message(chat_id, response)
             context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
             return 'OK'
-        
+
         # Check for predefined commands
         commands = CONFIG["response_settings"].get("commands", {})
         for cmd, response in commands.items():
             if message_text.startswith(cmd):
+                # Send command response without reply
                 send_message(chat_id, response)
                 context_manager.add_message(chat_id, None, CONFIG["bot_name"], response, is_bot=True, is_group=is_group)
                 return 'OK'
-        
+
         # Determine if bot should respond
         should_force_respond = is_reply_to_bot and CONFIG["response_settings"].get("respond_to_replies", True)
         keyword_match = should_respond(message_text) or should_force_respond
-        
+
         # If we shouldn't respond, check if we're in an active session
         if not keyword_match:
             # Check if this is from a user in an active session
             in_active_session = context_manager.is_session_active(chat_id, user_id)
-            
+
             if in_active_session:
                 # Update session
                 context_manager.update_session(chat_id, user_id, username)
-                
+
                 # Check if this is a command to end the session
                 if is_session_end_command(message_text):
                     context_manager.end_session(chat_id)
                     response_text = "давай, пінганеш"
+                    # Send end session message without reply
                     send_message(chat_id, response_text)
                     context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
                     return 'OK'
-                
+
                 # Auto reply to session participants if enabled
                 if (is_group and CONFIG.get("group_chat_settings", {}).get("auto_reply_to_session_participants", True)) or not is_group:
                     keyword_match = True
             elif is_group and CONFIG.get("group_chat_settings", {}).get("auto_join_session", True) and context_manager.is_session_active(chat_id):
                 # Add user to session
                 context_manager.update_session(chat_id, user_id, username)
-        
+
         # Special handling for forwarded messages - they get batched by chat_id
         if is_forwarded and CONFIG.get("message_batching", {}).get("enabled", True):
             forward_batch_key = f"forward:{chat_id}"
             current_time = time.time()
-            
+
             # Forward sender info
             forward_from = ""
             if 'forward_from' in message and message['forward_from']:
@@ -1408,10 +1427,10 @@ def webhook():
                 forward_from = message['forward_sender_name']
             elif 'forward_from_chat' in message:
                 forward_from = f"чату {message['forward_from_chat'].get('title', 'Unknown')}"
-            
+
             # Format message with its forwarded origin
             formatted_message = f"[Переслано від {forward_from}]: {message_text}"
-            
+
             # Add to existing forward batch or create a new one
             if forward_batch_key in forwarded_batches and current_time - forwarded_batches[forward_batch_key]['last_update'] < FORWARD_BATCH_TIMEOUT:
                 # Add to existing batch
@@ -1428,7 +1447,7 @@ def webhook():
                     'last_update': current_time,
                     'is_group': is_group
                 }
-                
+
                 # Wait for potential additional forwarded messages
                 # time.sleep(FORWARD_BATCH_TIMEOUT) # Removed sleep for performance
 
@@ -1437,58 +1456,61 @@ def webhook():
                 initiator_id = forwarded_batches[forward_batch_key]['initiator_id']
                 initiator_name = forwarded_batches[forward_batch_key]['initiator_name']
                 batch_is_group = forwarded_batches[forward_batch_key]['is_group']
-                
+
                 # Clean up the batch
                 del forwarded_batches[forward_batch_key]
-                
+
                 # Combine forwarded messages for a single response if multiple messages
                 if len(batched_forwards) > 1:
                     # Only respond if the bot would respond to normal messages in this context
                     if should_respond(message_text) or should_force_respond or (
-                            batch_is_group and context_manager.is_session_active(chat_id, initiator_id) and 
+                            batch_is_group and context_manager.is_session_active(chat_id, initiator_id) and
                             CONFIG.get("group_chat_settings", {}).get("auto_reply_to_session_participants", True)):
-                        
+
                         # Start or update session for group chats if needed
                         if batch_is_group and CONFIG.get("group_chat_settings", {}).get("session_enabled", True):
                             if not context_manager.is_session_active(chat_id):
                                 context_manager.start_session(chat_id, initiator_id, initiator_name)
                             else:
                                 context_manager.update_session(chat_id, initiator_id, initiator_name)
-                        
+
                         # Prepare combined input text
                         combined_input = f"Користувач {initiator_name} переслав кілька повідомлень:\n\n" + "\n".join(batched_forwards)
-                        
+
                         # Send typing indicator
                         send_typing_action(chat_id)
-                        
+
                         # Generate response using user context
                         response_text = generate_response(combined_input, chat_id, initiator_id, initiator_name)
-                        
+
                         # Send typing action with dynamic timing
                         send_typing_action(chat_id, response_text)
-                        
+
+                        # Determine reply ID (use the original message ID that triggered the batch)
+                        reply_id = message_id if batch_is_group else None
+
                         # Send the response
-                        send_message(chat_id, response_text)
-                        
+                        send_message(chat_id, response_text, reply_to_message_id=reply_id)
+
                         # Add bot's response to context
                         context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=batch_is_group)
-                        
+
                         # Always schedule potential follow-up task (delay happens in background check)
                         schedule_followup_task(chat_id, initiator_id, initiator_name, response_text)
-                
+
                 return 'OK'
-        
+
         # Create batch key for chat+user combination for message batching (for non-forwarded messages)
         batch_key = f"{chat_id}:{user_id}"
         current_time = time.time()
-        
+
         # Check if this is a message that needs a response, check batching
         if keyword_match and CONFIG.get("message_batching", {}).get("enabled", True) and not is_forwarded:
             # Add to batch if there's an active batch for this user in this chat
             if batch_key in message_batches and current_time - message_batches[batch_key]['last_update'] < MESSAGE_BATCH_TIMEOUT:
                 # Add to existing batch
                 message_batches[batch_key]['messages'].append(message_text)
-                message_batches[batch_key]['message_ids'].append(message_id)
+                message_batches[batch_key]['message_ids'].append(message_id) # Store message ID
                 message_batches[batch_key]['last_update'] = current_time
                 # Return immediately to let more messages accumulate if they're coming
                 return 'OK'
@@ -1496,24 +1518,26 @@ def webhook():
                 # Create new batch
                 message_batches[batch_key] = {
                     'messages': [message_text],
-                    'message_ids': [message_id],
+                    'message_ids': [message_id], # Store message ID
                     'username': username,
                     'user_id': user_id,
                     'is_group': is_group,
                     'created': current_time,
                     'last_update': current_time
                 }
-                
+
                 # Wait for potential additional messages
                 # time.sleep(MESSAGE_BATCH_TIMEOUT) # Removed sleep for performance
 
                 # Get all messages in batch
                 batched_messages = message_batches[batch_key]['messages']
                 batch_user_id = message_batches[batch_key]['user_id']
-                
+                # Use the ID of the *first* message in the batch for potential reply
+                batch_reply_trigger_id = message_batches[batch_key]['message_ids'][0]
+
                 # Clean up the batch
                 del message_batches[batch_key]
-                
+
                 # Check if session already exists or create one for group and private chats
                 if is_group and CONFIG.get("group_chat_settings", {}).get("session_enabled", True):
                     if not context_manager.is_session_active(chat_id):
@@ -1528,29 +1552,34 @@ def webhook():
                         context_manager.start_session(chat_id, user_id, username)
                     else:
                         context_manager.update_session(chat_id, user_id, username)
-                
+
                 # If we have multiple messages, combine them for a single response
                 if len(batched_messages) > 1:
-                    combined_input = "Користувач переслав кілька повідомлень:\n\n" + "\n".join([f"- {msg}" for msg in batched_messages])
+                    combined_input = "Користувач надіслав кілька повідомлень:\n\n" + "\n".join([f"- {msg}" for msg in batched_messages])
                     response_text = generate_response(combined_input, chat_id, batch_user_id, username)
-                    
+
                     # Send typing action with message length for dynamic typing duration
                     send_typing_action(chat_id, response_text)
-                    
-                    send_message(chat_id, response_text)
-                    
+
+                    # Determine reply ID (use the first message ID of the batch if group)
+                    reply_id = batch_reply_trigger_id if is_group else None
+                    send_message(chat_id, response_text, reply_to_message_id=reply_id)
+
                     # Add bot response to context
                     context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
-                    
+
                     # Always schedule potential follow-up task (delay happens in background check)
                     schedule_followup_task(chat_id, batch_user_id, username, response_text)
-                    
+
                     return 'OK'
                 else:
                     # Single message processing continues with normal flow
-                    message_text = batched_messages[0] # This line needs correct indentation
-        
-        # Process the message if we should respond
+                    message_text = batched_messages[0]
+                    # Use the stored message ID for potential reply
+                    triggering_message_id = batch_reply_trigger_id
+
+
+        # Process the message if we should respond (this handles single messages or fall-through from batching)
         if keyword_match:
             try:
                 # Start or update session for both group chats and private chats
@@ -1569,26 +1598,30 @@ def webhook():
                     else:
                         # Update existing session
                         context_manager.update_session(chat_id, user_id, username)
-                
+
                 # Send typing indicator
                 send_typing_action(chat_id)
-                
+
                 # Generate response using user context
                 response_text = generate_response(message_text, chat_id, user_id, username)
-                
+
+                # Determine reply ID (use triggering_message_id if group)
+                reply_id = triggering_message_id if is_group else None
+
                 # Send response
-                send_message(chat_id, response_text)
-                
+                send_message(chat_id, response_text, reply_to_message_id=reply_id)
+
                 # Add bot's response to context
                 context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
-                
+
                 # Always schedule potential follow-up task (delay happens in background check)
                 schedule_followup_task(chat_id, user_id, username, response_text)
-                
+
             except Exception as e:
                 print(f"Error generating response: {str(e)}")
+                # Send error message without reply
                 send_message(chat_id, "вибач, щось пішло не так. спробуй ще раз через хвилину")
-    
+
     return 'OK'
 
 @app.route('/')
