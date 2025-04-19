@@ -46,6 +46,9 @@ class GlobalMemory:
         # Set max impressions from config
         self.max_impressions = global_settings.get("impression_history", {}).get("max_saved_impressions", 5)
         
+        # Flag to track if memory needs saving
+        self._dirty = False
+        
         # Print initialization info
         print(f"GlobalMemory initialized with thresholds: {self.analysis_thresholds}")
         print(f"Max saved impressions per user: {self.max_impressions}")
@@ -63,6 +66,10 @@ class GlobalMemory:
     
     def _save_memory(self):
         """Save global memory to file"""
+        # Only save if data has changed
+        if not self._dirty:
+            return
+
         try:
             # Ensure the directory exists
             os.makedirs(os.path.dirname(self.memory_file), exist_ok=True)
@@ -76,6 +83,8 @@ class GlobalMemory:
             }
             with open(self.memory_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            # Reset dirty flag after successful save
+            self._dirty = False
         except Exception as e:
             print(f"Error saving global memory: {str(e)}")
     
@@ -107,6 +116,7 @@ class GlobalMemory:
         self.users[user_id_str]["chats"][chat_id_str]["message_count"] += 1
         self.users[user_id_str]["chats"][chat_id_str]["last_activity"] = datetime.now().isoformat()
         self.users[user_id_str]["total_messages"] = self.users[user_id_str].get("total_messages", 0) + 1
+        self._dirty = True # Mark memory as dirty
         
         # Initialize chat analytics if needed
         if chat_id_str not in self.chat_analytics:
@@ -120,6 +130,7 @@ class GlobalMemory:
                     "negative": 0
                 }
             }
+            self._dirty = True # Mark memory as dirty (new chat analytics entry)
         
         # Update chat analytics
         self.chat_analytics[chat_id_str]["total_messages"] += 1
@@ -127,6 +138,7 @@ class GlobalMemory:
             "username": username,
             "last_activity": datetime.now().isoformat()
         }
+        self._dirty = True # Mark memory as dirty
         
         # Check if we should perform analyses
         analyses_performed = False
@@ -141,6 +153,7 @@ class GlobalMemory:
             self.users[user_id_str]["needs_profile_update"] = True
             self.last_analyses["user_analysis"][user_id_str] = user_messages
             analyses_performed = True
+            self._dirty = True # Mark memory as dirty (analysis flags changed)
         
         # Chat analysis
         chat_messages = self.chat_analytics[chat_id_str]["total_messages"]
@@ -152,6 +165,7 @@ class GlobalMemory:
             self.chat_analytics[chat_id_str]["needs_update"] = True
             self.last_analyses["chat_analysis"][chat_id_str] = chat_messages
             analyses_performed = True
+            self._dirty = True # Mark memory as dirty (analysis flags changed)
             
         # Relationship analysis
         last_relationship_analysis = self.last_analyses["relationship_analysis"].get(chat_id_str, 0)
@@ -165,8 +179,9 @@ class GlobalMemory:
             self.relationship_analyses[chat_id_str]["needs_update"] = True
             self.last_analyses["relationship_analysis"][chat_id_str] = chat_messages
             analyses_performed = True
+            self._dirty = True # Mark memory as dirty (analysis flags changed)
         
-        # Save changes
+        # Save changes if dirty
         self._save_memory()
         
         return analyses_performed
@@ -188,16 +203,26 @@ class GlobalMemory:
                 },
                 "impressions": {}  # Bot's subjective impressions about this user
             }
+            self._dirty = True # Mark memory as dirty (new user created)
         else:
-            # Update basic info
+            # Update basic info only if username changed
+            if self.users[user_id]["username"] != username:
+                 self.users[user_id]["username"] = username # Keep username updated
+                 self._dirty = True # Mark memory as dirty
+            # Always update last_seen, but don't mark as dirty just for this
             self.users[user_id]["last_seen"] = datetime.now().isoformat()
-            self.users[user_id]["username"] = username  # Keep username updated
     
     def get_user_profile(self, user_id):
         """Get the user profile from global memory"""
         user_id_str = str(user_id)
         
         if user_id_str in self.users:
+            # Mark as no longer needing update
+            self.users[user_id_str]["needs_profile_update"] = False
+
+            # Save changes
+            self._dirty = True # Mark memory as dirty
+            self._save_memory()
             return self.users[user_id_str]
         
         return None
@@ -230,6 +255,7 @@ class GlobalMemory:
         self.users[user_id_str]["needs_profile_update"] = False
         
         # Save changes
+        self._dirty = True # Mark memory as dirty
         self._save_memory()
         return True
     
@@ -260,6 +286,7 @@ class GlobalMemory:
             del self.users[user_id_str]["impressions"][oldest_timestamp]
         
         # Save changes
+        self._dirty = True # Mark memory as dirty
         self._save_memory()
         return True
     
@@ -307,6 +334,7 @@ class GlobalMemory:
         self.relationship_analyses[chat_id_str]["needs_update"] = False
         
         # Save changes
+        self._dirty = True # Mark memory as dirty
         self._save_memory()
         return True
     
@@ -364,7 +392,9 @@ class GlobalMemory:
         for key, value in thresholds_dict.items():
             if key in self.analysis_thresholds:
                 self.analysis_thresholds[key] = value
+                self._dirty = True # Mark memory as dirty (thresholds are part of saved data implicitly via config, but let's mark it)
         
+        self._save_memory() # Save if thresholds changed
         return self.analysis_thresholds
         
     def get_global_context(self, chat_id, user_id):

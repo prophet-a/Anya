@@ -23,6 +23,8 @@ class ContextManager:
         self.user_impressions = {}
         # Останнє оновлення вражень про користувачів (останні 250 повідомлень)
         self.last_impression_update = {}
+        # Flag to track if memory needs saving
+        self._dirty = False
     
     def _load_memory(self):
         """Load memory from file if it exists"""
@@ -36,12 +38,17 @@ class ContextManager:
     
     def _save_memory(self):
         """Save memory to file"""
+        # Only save if data has changed
+        if not self._dirty:
+            return
         try:
             # Ensure the directory exists
             os.makedirs(os.path.dirname(self.memory_file), exist_ok=True)
             
             with open(self.memory_file, 'w', encoding='utf-8') as f:
                 json.dump(self.memory, f, ensure_ascii=False, indent=2)
+            # Reset dirty flag after successful save
+            self._dirty = False
         except Exception as e:
             print(f"Error saving memory: {str(e)}")
     
@@ -65,7 +72,7 @@ class ContextManager:
         if len(self.conversations[chat_id_str]) > self.max_messages:
             self.conversations[chat_id_str] = self.conversations[chat_id_str][-self.max_messages:]
         
-        # Update memory for this chat
+        # Update memory for this chat (this will also set _dirty if needed)
         self._update_memory(chat_id_str)
         
         # Auto-detect and save important information
@@ -74,6 +81,10 @@ class ContextManager:
             
             # Check if we have enough messages from this user to generate/update an impression
             self._maybe_update_user_impression(chat_id_str, user_id, username)
+        
+        # Mark memory as dirty and save
+        self._dirty = True
+        self._save_memory()
         
         return message_entry
     
@@ -225,6 +236,7 @@ class ContextManager:
                 fact = matches.group(1).strip()
                 if fact and len(fact) > 3:  # Ensure we have meaningful content
                     self.add_to_memory(chat_id, "important_facts", fact)
+                    self._dirty = True # Mark memory as dirty
     
     def get_conversation_context(self, chat_id):
         """Get formatted conversation history for the given chat"""
@@ -237,6 +249,8 @@ class ContextManager:
         for msg in self.conversations[chat_id_str]:
             speaker = "Bot" if msg["is_bot"] else f"User ({msg['username'] if msg['username'] else 'Unknown'})"
             formatted_context += f"{speaker}: {msg['content']}\n"
+        
+        self._save_memory() # Save if dirty
         
         return formatted_context
     
@@ -266,6 +280,7 @@ class ContextManager:
         elif category == "important_facts":
             if value not in self.memory[chat_id_str]["important_facts"]:
                 self.memory[chat_id_str]["important_facts"].append(value)
+                self._dirty = True # Mark memory as dirty
         
         self._save_memory()
     
@@ -333,6 +348,9 @@ class ContextManager:
         
         # Store the data for later processing
         self.user_impressions[f"{chat_id}:{user_id}"] = impression_data
+        
+        # Save to disk if dirty
+        self._save_memory()
     
     def get_user_impression_data(self, chat_id, user_id):
         """
@@ -361,7 +379,7 @@ class ContextManager:
         if user_key in self.user_impressions:
             self.user_impressions[user_key]["needs_generation"] = False
             
-        # Save to disk
+        # Save to disk if dirty
         self._save_memory()
         
     def get_user_impressions(self, chat_id):

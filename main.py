@@ -3,6 +3,7 @@ import json
 import re
 import requests
 import random
+import threading
 from flask import Flask, request, jsonify
 from google import genai
 from personality import PERSONALITY
@@ -251,8 +252,8 @@ def send_typing_action(chat_id, message_text=None):
     if message_text:
         # Calculate typing time: 30ms per character with min/max bounds
         typing_seconds = min(max(len(message_text) * 0.03, 1), 7)
-        time.sleep(typing_seconds)
-        
+        # time.sleep(typing_seconds) # Removed sleep for performance
+
     return response.json()
 
 def generate_user_impression(username, message_count, message_sample, existing_impression=""):
@@ -1019,6 +1020,28 @@ def process_followup_queue():
     
     return len(keys_to_remove)
 
+# Function to run background tasks in a separate thread
+def run_background_tasks():
+    print("[SERVER LOG] Starting background tasks...")
+    try:
+        # Process any pending follow-up messages
+        followups_processed = process_followup_queue()
+        if followups_processed > 0:
+            print(f"[SERVER LOG] Background: Processed {followups_processed} follow-up messages")
+
+        # Process pending user impressions in the background (rate-limited)
+        impressions_processed = process_pending_impressions()
+        if impressions_processed > 0:
+            print(f"[SERVER LOG] Background: Processed {impressions_processed} user impressions")
+
+        # Also process global memory analyses
+        analysis_results = global_analysis.process_pending_analyses(client)
+        if analysis_results["profiles_processed"] > 0 or analysis_results["relationships_processed"] > 0:
+            print(f"[SERVER LOG] Background: Processed global analyses: {analysis_results}")
+        print("[SERVER LOG] Background tasks finished.")
+    except Exception as e:
+        print(f"[SERVER LOG] Error in background tasks: {str(e)}")
+
 # Create a storage for forwarded messages
 forwarded_batches = {}
 FORWARD_BATCH_TIMEOUT = 3  # seconds to wait for more forwarded messages
@@ -1131,27 +1154,13 @@ def webhook():
     
     data = request.get_json()
     print(f"Received webhook data")
-    
+
     # Periodically check token usage
     check_token_usage()
 
-    # Process any pending follow-up messages
-    # followups_processed = process_followup_queue() # Commented out for performance testing
-    # if followups_processed > 0:
-    #     print(f"Processed {followups_processed} follow-up messages")
-
-    # Process pending user impressions in the background (rate-limited)
-    # impressions_processed = process_pending_impressions() # Commented out for performance testing
-    # if impressions_processed > 0:
-    #     print(f"Processed {impressions_processed} user impressions")
-
-    # Also process global memory analyses
-    # try: # Commented out for performance testing
-    #     analysis_results = global_analysis.process_pending_analyses(client)
-    #     if analysis_results["profiles_processed"] > 0 or analysis_results["relationships_processed"] > 0:
-    #         print(f"Processed global analyses: {analysis_results}")
-    # except Exception as e:
-    #     print(f"Error processing global analyses: {str(e)}")
+    # Run background tasks in a separate thread
+    background_thread = threading.Thread(target=run_background_tasks)
+    background_thread.start()
 
     # Check if this is a message update
     if 'message' not in data:
