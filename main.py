@@ -19,36 +19,21 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
-# Debug: Print all environment variables
-print("[SERVER LOG] All environment variables:")
-for key, value in os.environ.items():
-    print(f"[SERVER LOG] {key}: {value}")
+# Використовуємо напряму шлях до диску
+MEMORY_PATH = '/memory/memory.json'
+TOKEN_USAGE_FILE = '/memory/token_usage.json'
+print(f"[SERVER LOG] Using disk storage at {MEMORY_PATH}")
 
-# Set disk path for persistent storage on Render
-DISK_PATH = os.environ.get('RENDER_DISK_PATH', '')
-# Try alternative format variable names if the standard one isn't found
-if not DISK_PATH:
-    # Check for RENDER_DISK_PATH_DISK as per some Render configurations
-    DISK_PATH = os.environ.get('RENDER_DISK_PATH_DISK', '')
-    if DISK_PATH:
-        print(f"[SERVER LOG] Using RENDER_DISK_PATH_DISK: {DISK_PATH}")
-    else:
-        # Look for any disk path variable
-        for key, value in os.environ.items():
-            if 'DISK' in key and 'PATH' in key:
-                DISK_PATH = value
-                print(f"[SERVER LOG] Found disk path in {key}: {DISK_PATH}")
-                break
-
-MEMORY_PATH = DISK_PATH
-if MEMORY_PATH:
-    MEMORY_PATH = os.path.join(MEMORY_PATH, 'memory.json')
-    TOKEN_USAGE_FILE = os.path.join(DISK_PATH, 'token_usage.json')
-    print(f"[SERVER LOG] Using disk storage at {MEMORY_PATH}")
-else:
+# Переконаємося, що директорія існує
+try:
+    os.makedirs('/memory', exist_ok=True)
+    print("[SERVER LOG] Memory directory exists or was created")
+except Exception as e:
+    print(f"[SERVER LOG] Failed to create memory directory: {str(e)}")
+    # Якщо не вдалося створити директорію, використовуємо локальне сховище
     MEMORY_PATH = 'memory.json'
-    TOKEN_USAGE_FILE = "token_usage.json"
-    print("[SERVER LOG] No disk path found, using local storage")
+    TOKEN_USAGE_FILE = 'token_usage.json'
+    print("[SERVER LOG] Fallback to local storage")
 
 # Load configuration
 def load_config():
