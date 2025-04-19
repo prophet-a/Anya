@@ -1,5 +1,5 @@
 """
-This module implements context caching and conversation summarization
+This module implements conversation summarization
 for optimizing token usage with the Gemini API.
 """
 
@@ -8,15 +8,15 @@ import json
 
 class ContextCache:
     """
-    Manages caching of context keys and conversation summaries
-    to reduce token usage in Gemini API requests.
+    Manages conversation summaries to reduce token usage in Gemini API requests.
+    Note: Direct API caching was planned but is not supported in the current Gemini API version.
+    This class now focuses on conversation summarization only.
     """
     def __init__(self, context_manager, config=None):
         self.context_manager = context_manager
         
         # Set default config values
         self.enabled = True
-        self.max_age_hours = 1
         self.summarization_enabled = True
         self.messages_between_updates = 20
         self.hours_between_updates = 1
@@ -24,57 +24,12 @@ class ContextCache:
         # Override with config if provided
         if config:
             context_settings = config.get("context_settings", {})
-            caching_settings = context_settings.get("caching", {})
+            summarization = context_settings.get("summarization", {})
             
-            self.enabled = caching_settings.get("enabled", True)
-            self.max_age_hours = caching_settings.get("max_age_hours", 1)
-            
-            summarization = caching_settings.get("summarization", {})
-            self.summarization_enabled = summarization.get("enabled", True)
+            self.enabled = summarization.get("enabled", True)
+            self.summarization_enabled = self.enabled  # Both are the same now
             self.messages_between_updates = summarization.get("messages_between_updates", 20)
             self.hours_between_updates = summarization.get("hours_between_updates", 1)
-    
-    def save_cache_key(self, chat_id, cache_key):
-        """Saves a cache key for a specific chat"""
-        chat_id_str = str(chat_id)
-        
-        # Add entry in memory
-        if chat_id_str not in self.context_manager.memory:
-            self.context_manager.memory[chat_id_str] = {}
-        
-        self.context_manager.memory[chat_id_str]["cache_key"] = {
-            "key": cache_key,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        # Save memory
-        self.context_manager._save_memory()
-    
-    def get_cache_key(self, chat_id):
-        """Gets the saved cache key for a chat"""
-        chat_id_str = str(chat_id)
-        
-        if chat_id_str in self.context_manager.memory and "cache_key" in self.context_manager.memory[chat_id_str]:
-            return self.context_manager.memory[chat_id_str]["cache_key"]["key"]
-        
-        return None
-    
-    def is_cache_expired(self, chat_id, max_age_hours=None):
-        """Checks if the cache is expired"""
-        if max_age_hours is None:
-            max_age_hours = self.max_age_hours
-            
-        chat_id_str = str(chat_id)
-        
-        if chat_id_str in self.context_manager.memory and "cache_key" in self.context_manager.memory[chat_id_str]:
-            timestamp_str = self.context_manager.memory[chat_id_str]["cache_key"]["timestamp"]
-            timestamp = datetime.fromisoformat(timestamp_str)
-            
-            # Check if cache is older than specified time
-            age = datetime.now() - timestamp
-            return age > timedelta(hours=max_age_hours)
-        
-        return True  # If no cache exists, consider it expired
     
     def should_create_summary(self, chat_id):
         """Determines if a conversation summary should be created/updated"""
@@ -126,4 +81,19 @@ class ContextCache:
         if chat_id_str in self.context_manager.memory and "conversation_summary" in self.context_manager.memory[chat_id_str]:
             return self.context_manager.memory[chat_id_str]["conversation_summary"]
         
-        return None 
+        return None
+    
+    # For compatibility with existing code
+    def get_cache_key(self, chat_id):
+        """
+        Stub method for compatibility - the current Gemini API doesn't support cache keys.
+        Always returns None to indicate no cache is available.
+        """
+        return None
+    
+    def is_cache_expired(self, chat_id, max_age_hours=None):
+        """
+        Stub method for compatibility - the current Gemini API doesn't support cache keys.
+        Always returns True to indicate cache should be considered expired.
+        """
+        return True 

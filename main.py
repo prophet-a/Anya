@@ -35,14 +35,14 @@ def load_config():
                 MESSAGE_BATCH_TIMEOUT = 0
                 print("Message batching disabled")
             
-            # Load context caching settings
+            # Load summarization settings
             context_settings = config.get("context_settings", {})
-            caching_settings = context_settings.get("caching", {})
-            if caching_settings.get("enabled", True):
-                print("Context caching enabled")
+            summarization = context_settings.get("summarization", {})
+            if summarization.get("enabled", True):
+                print("Conversation summarization enabled")
                 # Settings will be used directly by the context cache class
             else:
-                print("Context caching disabled")
+                print("Conversation summarization disabled")
                 
             return config
     except Exception as e:
@@ -108,8 +108,7 @@ MESSAGE_BATCH_TIMEOUT = 2  # seconds to wait for more messages
 # Track token usage
 token_usage = {
     "traditional": 0,
-    "cached": 0,
-    "summaries": 0
+    "summarized": 0
 }
 
 def log_token_usage(text, usage_type="traditional"):
@@ -124,7 +123,12 @@ def log_token_usage(text, usage_type="traditional"):
     # Periodically log usage stats
     if sum(token_usage.values()) % 1000 < 10:  # Log roughly every 1000 tokens
         print(f"Token usage stats: {token_usage}")
-        print(f"Estimated savings: {(token_usage['traditional'] - token_usage['cached'] - token_usage['summaries']) / max(1, token_usage['traditional']) * 100:.2f}%")
+        
+        if token_usage["traditional"] > 0 and token_usage["summarized"] > 0:
+            traditional_size = token_usage["traditional"]
+            summarized_size = token_usage["summarized"]
+            savings = (traditional_size - summarized_size) / traditional_size * 100
+            print(f"Estimated summary savings: {savings:.2f}%")
     
     return estimated_tokens
 
@@ -276,102 +280,81 @@ def get_memory_context(chat_id):
     return memory_context
 
 def generate_response(user_input, chat_id):
-    """Generate response using Gemini API with context caching and summarization"""
-    # Check if caching is enabled
-    if context_cache.enabled:
-        # Get cache key, if exists
-        cache_key = context_cache.get_cache_key(chat_id)
-        use_cache = cache_key and not context_cache.is_cache_expired(chat_id)
-        
-        if use_cache:
-            # Use cached context
-            try:
-                print(f"Using cached context for chat {chat_id}")
-                # Log token usage for the cached path (just the user input)
-                log_token_usage(user_input, "cached")
-                
-                response = client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=user_input,
-                    cached_context=cache_key
-                )
-                
-                # Save new cache key if available
-                if hasattr(response, 'cache_key') and response.cache_key:
-                    context_cache.save_cache_key(chat_id, response.cache_key)
-                    
-                return response.text
-            except Exception as e:
-                print(f"Error with cached context: {str(e)}")
-                # If cache error, continue with full context
-                use_cache = False
-    else:
-        use_cache = False
-    
-    # If cache not available or expired, use full context
-    if not use_cache:
+    """Generate response using Gemini API with conversation summarization"""
+    # Check if summarization is enabled
+    if context_cache.enabled and context_cache.summarization_enabled:
         # Check if we need to create or update summary
-        if context_cache.enabled and context_cache.summarization_enabled:
-            needs_summary = context_cache.should_create_summary(chat_id)
-            if needs_summary:
-                summary = generate_conversation_summary(chat_id)
-                if summary:
-                    # Log token usage for summary generation
-                    log_token_usage(summary, "summaries")
-        
-        # Get conversation context
-        conversation_context = ""
-        if context_settings.get("enabled", True):
-            conversation_context = context_manager.get_conversation_context(chat_id)
-        
-        # Get summary if enabled
-        summary = None
-        if context_cache.enabled and context_cache.summarization_enabled:
-            summary = context_cache.get_conversation_summary(chat_id)
-        
-        # Get memory context
-        memory_context = ""
-        if context_settings.get("memory_enabled", True):
-            memory_context = get_memory_context(chat_id)
-        
-        # Build complete prompt
-        prompt = PERSONALITY + "\n\n"
-        
-        if summary:
-            prompt += f"Previous conversation summary:\n{summary}\n\n"
-        
-        if memory_context:
-            prompt += memory_context + "\n\n"
+        needs_summary = context_cache.should_create_summary(chat_id)
+        if needs_summary:
+            summary = generate_conversation_summary(chat_id)
+            if summary:
+                # Log token usage for summary generation
+                log_token_usage(summary, "summarized")
+    
+    # Get conversation context
+    conversation_context = ""
+    if context_settings.get("enabled", True):
+        conversation_context = context_manager.get_conversation_context(chat_id)
+    
+    # Get summary if enabled
+    summary = None
+    if context_cache.enabled and context_cache.summarization_enabled:
+        summary = context_cache.get_conversation_summary(chat_id)
+    
+    # Get memory context
+    memory_context = ""
+    if context_settings.get("memory_enabled", True):
+        memory_context = get_memory_context(chat_id)
+    
+    # Build complete prompt
+    full_traditional_prompt = PERSONALITY + "\n\n"
+    actual_prompt = PERSONALITY + "\n\n"
+    
+    if memory_context:
+        full_traditional_prompt += memory_context + "\n\n"
+        actual_prompt += memory_context + "\n\n"
+    
+    # Always add the full conversation context to our traditional measurement
+    if conversation_context:
+        full_traditional_prompt += conversation_context + "\n\n"
+    
+    # For the actual prompt, use summary if available and limit history
+    if summary:
+        actual_prompt += f"Previous conversation summary:\n{summary}\n\n"
         
         # Limit history to last 20 messages if we have a summary
-        if summary and len(conversation_context) > 1000:
+        if conversation_context:
             conversation_lines = conversation_context.split('\n')
             if len(conversation_lines) > 20:
-                conversation_context = "Recent messages:\n" + "\n".join(conversation_lines[-20:])
-        
+                conversation_context_short = "Recent messages:\n" + "\n".join(conversation_lines[-20:])
+                actual_prompt += conversation_context_short + "\n\n"
+            else:
+                actual_prompt += conversation_context + "\n\n"
+    else:
+        # No summary available, use full context
         if conversation_context:
-            prompt += conversation_context + "\n\n"
+            actual_prompt += conversation_context + "\n\n"
+    
+    # Add user message to both prompts
+    full_traditional_prompt += "User message:\n" + user_input
+    actual_prompt += "User message:\n" + user_input
+    
+    # Log token usage for both approaches
+    log_token_usage(full_traditional_prompt, "traditional")
+    
+    if summary:
+        log_token_usage(actual_prompt, "summarized")
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=actual_prompt
+        )
         
-        prompt += "User message:\n" + user_input
-        
-        # Log token usage for the traditional path (full prompt)
-        log_token_usage(prompt, "traditional")
-        
-        try:
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt,
-                enable_cached_context=context_cache.enabled  # Enable caching only if enabled in config
-            )
-            
-            # Save cache key if enabled
-            if context_cache.enabled and hasattr(response, 'cache_key') and response.cache_key:
-                context_cache.save_cache_key(chat_id, response.cache_key)
-            
-            return response.text
-        except Exception as e:
-            print(f"Error generating response: {str(e)}")
-            return "Ой, щось мій мозок глючить... Давай ще раз спробуємо?"
+        return response.text
+    except Exception as e:
+        print(f"Error generating response: {str(e)}")
+        return "Ой, щось мій мозок глючить... Давай ще раз спробуємо?"
 
 def should_respond(text):
     """Check if the message contains keywords that should trigger a response"""
