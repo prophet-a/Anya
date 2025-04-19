@@ -871,28 +871,29 @@ def should_send_followup_message(chat_id, user_id, previous_response):
     prompt = f"""
     {PERSONALITY}
     
-    Тобі треба вирішити, чи варто мені надіслати додаткове повідомлення після моєї попередньої відповіді.
-    
+    Тобі треба вирішити, чи варто мені надіслати *додаткове*, коротке повідомлення *після* моєї попередньої відповіді. **Роби це рідко**, лише якщо це *дійсно* покращить розмову.
+
     Нещодавня розмова:
     {conversation}
-    
+
     Моя попередня відповідь: "{previous_response}"
-    
-    Проаналізуй мою відповідь і визнач, чи варто мені надіслати додаткове повідомлення, щоб зробити спілкування більш природним.
-    Деякі вагомі причини для додаткового повідомлення:
-    1. Моя відповідь закінчується питанням, але могла б бути розширена
-    2. Я згадала щось цікаве, що можна розвинути
-    3. Я поділилася чимось про себе, що можна доповнити пов'язаною думкою
-    4. Розмова має дружній, невимушений тон, який виграє від швидкого доповнення
-    
-    НЕ надсилай додаткове повідомлення, якщо:
-    1. Моя відповідь була завершеною або вичерпною
-    2. Я вже поставила кілька запитань
-    3. Розмова формальна або чисто ділова
-    4. Я відповідаю на конкретну команду чи інструкцію
-    
-    Поверни JSON об'єкт з наступними полями:
-    {{"should_send": true/false, "reason": "коротке пояснення", "delay_seconds": <секунди очікування перед надсиланням>}}
+
+    Проаналізуй мою попередню відповідь. Чи є *дуже вагома* причина додати ще щось коротке? **За замовчуванням відповідь - НІ.**
+
+    **ВАГОМІ причини надіслати (використовуй обережно):**
+    1. Моя відповідь була *дуже* короткою і натякає на продовження, але не розвинула думку.
+    2. Я поділилася чимось дуже особистим/цікавим, що можна *коротко* доповнити пов'язаною, несподіваною деталлю.
+
+    **НЕ надсилай додаткове повідомлення, якщо:**
+    1. Моя попередня відповідь була **вичерпною, завершеною або достатньо довгою** (більше 2-3 речень).
+    2. Я **вже поставила питання** у попередній відповіді.
+    3. Розмова **формальна**, ділова або відповідь на конкретну команду/інструкцію.
+    4. Попередня відповідь **не містить нічого**, що потребує негайного доповнення.
+    5. Ти **не впевнена**, чи це доречно. Краще промовчати.
+
+    **Поверни ТІЛЬКИ JSON об'єкт** з такими полями:
+    `{{"should_send": true/false, "reason": "дуже коротке пояснення, чому ТАК або НІ", "delay_seconds": <ціле число секунд 1-5>}}`
+    **Важливо: Поле "should_send" має бути `false` за замовчуванням.**
     """
     
     # Log token usage for analysis request
@@ -1133,25 +1134,25 @@ def webhook():
     
     # Periodically check token usage
     check_token_usage()
-    
+
     # Process any pending follow-up messages
-    followups_processed = process_followup_queue()
-    if followups_processed > 0:
-        print(f"Processed {followups_processed} follow-up messages")
-    
+    # followups_processed = process_followup_queue() # Commented out for performance testing
+    # if followups_processed > 0:
+    #     print(f"Processed {followups_processed} follow-up messages")
+
     # Process pending user impressions in the background (rate-limited)
-    impressions_processed = process_pending_impressions()
-    if impressions_processed > 0:
-        print(f"Processed {impressions_processed} user impressions")
-    
+    # impressions_processed = process_pending_impressions() # Commented out for performance testing
+    # if impressions_processed > 0:
+    #     print(f"Processed {impressions_processed} user impressions")
+
     # Also process global memory analyses
-    try:
-        analysis_results = global_analysis.process_pending_analyses(client)
-        if analysis_results["profiles_processed"] > 0 or analysis_results["relationships_processed"] > 0:
-            print(f"Processed global analyses: {analysis_results}")
-    except Exception as e:
-        print(f"Error processing global analyses: {str(e)}")
-    
+    # try: # Commented out for performance testing
+    #     analysis_results = global_analysis.process_pending_analyses(client)
+    #     if analysis_results["profiles_processed"] > 0 or analysis_results["relationships_processed"] > 0:
+    #         print(f"Processed global analyses: {analysis_results}")
+    # except Exception as e:
+    #     print(f"Error processing global analyses: {str(e)}")
+
     # Check if this is a message update
     if 'message' not in data:
         return 'OK'
@@ -1313,8 +1314,8 @@ def webhook():
                 }
                 
                 # Wait for potential additional forwarded messages
-                time.sleep(FORWARD_BATCH_TIMEOUT)
-                
+                # time.sleep(FORWARD_BATCH_TIMEOUT) # Removed sleep for performance
+
                 # Get all forwarded messages in batch
                 batched_forwards = forwarded_batches[forward_batch_key]['messages']
                 initiator_id = forwarded_batches[forward_batch_key]['initiator_id']
@@ -1390,8 +1391,8 @@ def webhook():
                 }
                 
                 # Wait for potential additional messages
-                time.sleep(MESSAGE_BATCH_TIMEOUT)
-                
+                # time.sleep(MESSAGE_BATCH_TIMEOUT) # Removed sleep for performance
+
                 # Get all messages in batch
                 batched_messages = message_batches[batch_key]['messages']
                 batch_user_id = message_batches[batch_key]['user_id']
