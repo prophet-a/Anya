@@ -9,7 +9,6 @@ import json
 from datetime import datetime
 from global_memory import GlobalMemory
 from personality import PERSONALITY
-from google.genai.types import ThinkingConfig, GenerateContentConfig
 
 # Initialize global memory
 global_memory = GlobalMemory()
