@@ -8,6 +8,7 @@ from google import genai
 from personality import PERSONALITY
 from context_manager import ContextManager
 from scheduled_messages import ScheduledMessenger
+from context_caching import ContextCache
 import time
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -33,6 +34,15 @@ def load_config():
             else:
                 MESSAGE_BATCH_TIMEOUT = 0
                 print("Message batching disabled")
+            
+            # Load context caching settings
+            context_settings = config.get("context_settings", {})
+            caching_settings = context_settings.get("caching", {})
+            if caching_settings.get("enabled", True):
+                print("Context caching enabled")
+                # Settings will be used directly by the context cache class
+            else:
+                print("Context caching disabled")
                 
             return config
     except Exception as e:
@@ -56,6 +66,9 @@ context_manager = ContextManager(
     memory_file=context_settings.get("memory_file", "memory.json"),
     session_timeout_seconds=group_settings.get("session_timeout_seconds", 300)
 )
+
+# Initialize context cache
+context_cache = ContextCache(context_manager, CONFIG)
 
 # Initialize scheduled messenger if enabled
 scheduled_messages_config = CONFIG.get("scheduled_messages", {})
@@ -91,6 +104,29 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # Message batching system to handle multiple messages at once (for forwarded messages etc.)
 message_batches = {}
 MESSAGE_BATCH_TIMEOUT = 2  # seconds to wait for more messages
+
+# Track token usage
+token_usage = {
+    "traditional": 0,
+    "cached": 0,
+    "summaries": 0
+}
+
+def log_token_usage(text, usage_type="traditional"):
+    """Log approximate token usage for monitoring"""
+    global token_usage
+    
+    # Rough approximation: 1 token ~ 4 characters
+    estimated_tokens = len(text) // 4
+    
+    token_usage[usage_type] += estimated_tokens
+    
+    # Periodically log usage stats
+    if sum(token_usage.values()) % 1000 < 10:  # Log roughly every 1000 tokens
+        print(f"Token usage stats: {token_usage}")
+        print(f"Estimated savings: {(token_usage['traditional'] - token_usage['cached'] - token_usage['summaries']) / max(1, token_usage['traditional']) * 100:.2f}%")
+    
+    return estimated_tokens
 
 def send_message(chat_id, text):
     """Send message to Telegram chat"""
@@ -240,37 +276,102 @@ def get_memory_context(chat_id):
     return memory_context
 
 def generate_response(user_input, chat_id):
-    """Generate response using Gemini API with context"""
-    # Get context and memory
-    conversation_context = ""
-    memory_context = ""
+    """Generate response using Gemini API with context caching and summarization"""
+    # Check if caching is enabled
+    if context_cache.enabled:
+        # Get cache key, if exists
+        cache_key = context_cache.get_cache_key(chat_id)
+        use_cache = cache_key and not context_cache.is_cache_expired(chat_id)
+        
+        if use_cache:
+            # Use cached context
+            try:
+                print(f"Using cached context for chat {chat_id}")
+                # Log token usage for the cached path (just the user input)
+                log_token_usage(user_input, "cached")
+                
+                response = client.models.generate_content(
+                    model="gemini-2.0-flash",
+                    contents=user_input,
+                    cached_context=cache_key
+                )
+                
+                # Save new cache key if available
+                if hasattr(response, 'cache_key') and response.cache_key:
+                    context_cache.save_cache_key(chat_id, response.cache_key)
+                    
+                return response.text
+            except Exception as e:
+                print(f"Error with cached context: {str(e)}")
+                # If cache error, continue with full context
+                use_cache = False
+    else:
+        use_cache = False
     
-    if context_settings.get("enabled", True):
-        conversation_context = context_manager.get_conversation_context(chat_id)
-    
-    if context_settings.get("memory_enabled", True):
-        memory_context = get_memory_context(chat_id)
-    
-    # Build complete prompt
-    prompt = PERSONALITY + "\n\n"
-    
-    if memory_context:
-        prompt += memory_context + "\n\n"
-    
-    if conversation_context:
-        prompt += conversation_context + "\n\n"
-    
-    prompt += "User message:\n" + user_input
-    
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
-        )
-        return response.text
-    except Exception as e:
-        print(f"Error generating response: {str(e)}")
-        return "Ой, щось мій мозок глючить... Давай ще раз спробуємо?"
+    # If cache not available or expired, use full context
+    if not use_cache:
+        # Check if we need to create or update summary
+        if context_cache.enabled and context_cache.summarization_enabled:
+            needs_summary = context_cache.should_create_summary(chat_id)
+            if needs_summary:
+                summary = generate_conversation_summary(chat_id)
+                if summary:
+                    # Log token usage for summary generation
+                    log_token_usage(summary, "summaries")
+        
+        # Get conversation context
+        conversation_context = ""
+        if context_settings.get("enabled", True):
+            conversation_context = context_manager.get_conversation_context(chat_id)
+        
+        # Get summary if enabled
+        summary = None
+        if context_cache.enabled and context_cache.summarization_enabled:
+            summary = context_cache.get_conversation_summary(chat_id)
+        
+        # Get memory context
+        memory_context = ""
+        if context_settings.get("memory_enabled", True):
+            memory_context = get_memory_context(chat_id)
+        
+        # Build complete prompt
+        prompt = PERSONALITY + "\n\n"
+        
+        if summary:
+            prompt += f"Previous conversation summary:\n{summary}\n\n"
+        
+        if memory_context:
+            prompt += memory_context + "\n\n"
+        
+        # Limit history to last 20 messages if we have a summary
+        if summary and len(conversation_context) > 1000:
+            conversation_lines = conversation_context.split('\n')
+            if len(conversation_lines) > 20:
+                conversation_context = "Recent messages:\n" + "\n".join(conversation_lines[-20:])
+        
+        if conversation_context:
+            prompt += conversation_context + "\n\n"
+        
+        prompt += "User message:\n" + user_input
+        
+        # Log token usage for the traditional path (full prompt)
+        log_token_usage(prompt, "traditional")
+        
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+                enable_cached_context=context_cache.enabled  # Enable caching only if enabled in config
+            )
+            
+            # Save cache key if enabled
+            if context_cache.enabled and hasattr(response, 'cache_key') and response.cache_key:
+                context_cache.save_cache_key(chat_id, response.cache_key)
+            
+            return response.text
+        except Exception as e:
+            print(f"Error generating response: {str(e)}")
+            return "Ой, щось мій мозок глючить... Давай ще раз спробуємо?"
 
 def should_respond(text):
     """Check if the message contains keywords that should trigger a response"""
@@ -530,6 +631,41 @@ def handle_schedule_command(chat_id, command_text):
     
     else:
         return f"❌ Шо за '{action}'? Не знаю такого. Спробуй status, on або off"
+
+def generate_conversation_summary(chat_id):
+    """Generates a concise summary of the recent conversation"""
+    
+    # Get the conversation context
+    messages = context_manager.get_conversation_context(chat_id)
+    
+    # Limit input length
+    if len(messages) > 1000:  # Approximately 1000 tokens
+        messages = messages[-1000:]
+    
+    summary_prompt = f"""
+    Read the recent conversation and create a brief summary (3-5 sentences)
+    that captures the main topics, mood, and key points.
+    This summary will be used as context for future interactions.
+    
+    Conversation:
+    {messages}
+    """
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=summary_prompt
+        )
+        
+        summary = response.text.strip()
+        
+        # Save the summary to memory
+        context_cache.save_conversation_summary(chat_id, summary)
+        
+        return summary
+    except Exception as e:
+        print(f"Error generating summary: {str(e)}")
+        return None
 
 @app.route('/webhook', methods=['POST'])
 def webhook():

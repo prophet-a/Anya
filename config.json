@@ -48,6 +48,15 @@
       "enabled": true,
       "min_messages_before_impression": 10,
       "messages_between_updates": 30
+    },
+    "caching": {
+      "enabled": true,
+      "max_age_hours": 1,
+      "summarization": {
+        "enabled": true,
+        "messages_between_updates": 10,
+        "hours_between_updates": 1
+      }
     }
   },
   "group_chat_settings": {
