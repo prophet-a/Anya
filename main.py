@@ -14,6 +14,7 @@ import global_analysis
 import time
 from datetime import datetime, timedelta
 from collections import defaultdict
+from google.api_core.client_options import HttpOptions
 
 app = Flask(__name__)
 
@@ -120,7 +121,10 @@ else:
     print("Scheduled messages disabled")
 
 # Configure Gemini
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    http_options=HttpOptions(api_version="v1")
+)
 
 # Message batching system to handle multiple messages at once (for forwarded messages etc.)
 message_batches = {}
@@ -286,8 +290,9 @@ def generate_user_impression(username, message_count, message_sample, existing_i
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
+            model="gemini-2.5-flash-001",
+            contents=prompt,
+            enable_cached_context=True
         )
         impression = response.text.strip()
         
@@ -430,8 +435,9 @@ def generate_response(user_input, chat_id, user_id=None, username=None):
     # Generate the response with Gemini
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
+            model="gemini-2.5-flash-001",
+            contents=prompt,
+            enable_cached_context=True
         )
         
         # Log estimated token usage for output
@@ -727,8 +733,9 @@ def generate_conversation_summary(chat_id):
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=summary_prompt
+            model="gemini-2.5-flash-001",
+            contents=summary_prompt,
+            enable_cached_context=True
         )
         
         summary = response.text.strip()
@@ -898,8 +905,9 @@ def should_send_followup_message(chat_id, user_id, previous_response):
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
+            model="gemini-2.5-flash-001",
+            contents=prompt,
+            enable_cached_context=True
         )
         
         # Log token usage for analysis response
@@ -948,8 +956,9 @@ def generate_followup_message(chat_id, user_id, username, previous_response):
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
+            model="gemini-2.5-flash-001",
+            contents=prompt,
+            enable_cached_context=True
         )
         
         followup = response.text.strip()

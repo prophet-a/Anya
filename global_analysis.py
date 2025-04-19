@@ -9,6 +9,7 @@ import json
 from datetime import datetime
 from global_memory import GlobalMemory
 from personality import PERSONALITY
+from google.genai.types import ThinkingConfig, GenerateContentConfig
 
 # Initialize global memory
 global_memory = GlobalMemory()
@@ -61,8 +62,14 @@ def generate_user_profile(user_id, client):
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
+            model="gemini-2.5-flash-001",
+            contents=prompt,
+            enable_cached_context=True,
+            config=GenerateContentConfig(
+                thinking_config=ThinkingConfig(
+                    thinking_budget=1024  # Помірний бюджет мислення для аналітичних завдань
+                )
+            )
         )
         
         # Process the response
@@ -173,8 +180,14 @@ def generate_relationship_analysis(chat_id, client):
     
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
+            model="gemini-2.5-flash-001",
+            contents=prompt,
+            enable_cached_context=True,
+            config=GenerateContentConfig(
+                thinking_config=ThinkingConfig(
+                    thinking_budget=1024  # Помірний бюджет мислення для аналітичних завдань
+                )
+            )
         )
         
         # Process the response
