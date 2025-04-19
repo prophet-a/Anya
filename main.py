@@ -19,6 +19,17 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
+# Set disk path for persistent storage on Render
+MEMORY_PATH = os.environ.get('RENDER_DISK_PATH', '')
+if MEMORY_PATH:
+    MEMORY_PATH = os.path.join(MEMORY_PATH, 'memory.json')
+    TOKEN_USAGE_FILE = os.path.join(os.environ.get('RENDER_DISK_PATH', ''), 'token_usage.json')
+    print(f"[SERVER LOG] Using disk storage at {MEMORY_PATH}")
+else:
+    MEMORY_PATH = 'memory.json'
+    TOKEN_USAGE_FILE = "token_usage.json"
+    print("[SERVER LOG] No disk path found, using local storage")
+
 # Load configuration
 def load_config():
     global message_batches, MESSAGE_BATCH_TIMEOUT
@@ -63,7 +74,7 @@ context_settings = CONFIG.get("context_settings", {})
 group_settings = CONFIG.get("group_chat_settings", {})
 context_manager = ContextManager(
     max_messages=context_settings.get("max_messages", 200),
-    memory_file=context_settings.get("memory_file", "memory.json"),
+    memory_file=MEMORY_PATH,
     session_timeout_seconds=group_settings.get("session_timeout_seconds", 300)
 )
 
@@ -76,7 +87,7 @@ if scheduled_messages_config.get("enabled", False):
     scheduled_messenger = ScheduledMessenger(
         telegram_token=TELEGRAM_BOT_TOKEN,
         gemini_api_key=GEMINI_API_KEY,
-        memory_file=context_settings.get("memory_file", "memory.json"),
+        memory_file=MEMORY_PATH,
         config_file="config.json"
     )
     
@@ -115,12 +126,6 @@ token_usage = {
     "last_check_time": datetime.now().isoformat()
 }
 
-# File to store token usage
-TOKEN_USAGE_FILE = "token_usage.json"
-
-# Load existing token usage statistics if available
-load_token_usage()
-
 def save_token_usage():
     """Save token usage statistics to a file"""
     try:
@@ -144,6 +149,9 @@ def load_token_usage():
                 print(f"[SERVER LOG] Token usage loaded from {TOKEN_USAGE_FILE}")
     except Exception as e:
         print(f"[SERVER LOG] Error loading token usage: {str(e)}")
+
+# Load existing token usage statistics if available
+load_token_usage()
 
 def log_token_usage(text, usage_type="traditional"):
     """Log approximate token usage for monitoring"""
