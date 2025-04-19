@@ -25,10 +25,25 @@ for key, value in os.environ.items():
     print(f"[SERVER LOG] {key}: {value}")
 
 # Set disk path for persistent storage on Render
-MEMORY_PATH = os.environ.get('RENDER_DISK_PATH', '')
+DISK_PATH = os.environ.get('RENDER_DISK_PATH', '')
+# Try alternative format variable names if the standard one isn't found
+if not DISK_PATH:
+    # Check for RENDER_DISK_PATH_DISK as per some Render configurations
+    DISK_PATH = os.environ.get('RENDER_DISK_PATH_DISK', '')
+    if DISK_PATH:
+        print(f"[SERVER LOG] Using RENDER_DISK_PATH_DISK: {DISK_PATH}")
+    else:
+        # Look for any disk path variable
+        for key, value in os.environ.items():
+            if 'DISK' in key and 'PATH' in key:
+                DISK_PATH = value
+                print(f"[SERVER LOG] Found disk path in {key}: {DISK_PATH}")
+                break
+
+MEMORY_PATH = DISK_PATH
 if MEMORY_PATH:
     MEMORY_PATH = os.path.join(MEMORY_PATH, 'memory.json')
-    TOKEN_USAGE_FILE = os.path.join(os.environ.get('RENDER_DISK_PATH', ''), 'token_usage.json')
+    TOKEN_USAGE_FILE = os.path.join(DISK_PATH, 'token_usage.json')
     print(f"[SERVER LOG] Using disk storage at {MEMORY_PATH}")
 else:
     MEMORY_PATH = 'memory.json'
