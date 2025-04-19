@@ -195,7 +195,6 @@ class ScheduledMessenger:
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash-001",
                 contents=prompt,
-                enable_cached_context=True
             )
             message = response.text.strip()
             

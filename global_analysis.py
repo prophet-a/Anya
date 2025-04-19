@@ -64,12 +64,6 @@ def generate_user_profile(user_id, client):
         response = client.models.generate_content(
             model="gemini-2.5-flash-001",
             contents=prompt,
-            enable_cached_context=True,
-            config=GenerateContentConfig(
-                thinking_config=ThinkingConfig(
-                    thinking_budget=1024  # Помірний бюджет мислення для аналітичних завдань
-                )
-            )
         )
         
         # Process the response
@@ -182,12 +176,6 @@ def generate_relationship_analysis(chat_id, client):
         response = client.models.generate_content(
             model="gemini-2.5-flash-001",
             contents=prompt,
-            enable_cached_context=True,
-            config=GenerateContentConfig(
-                thinking_config=ThinkingConfig(
-                    thinking_budget=1024  # Помірний бюджет мислення для аналітичних завдань
-                )
-            )
         )
         
         # Process the response

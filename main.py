@@ -290,7 +290,6 @@ def generate_user_impression(username, message_count, message_sample, existing_i
         response = client.models.generate_content(
             model="gemini-2.5-flash-001",
             contents=prompt,
-            enable_cached_context=True
         )
         impression = response.text.strip()
         
@@ -435,7 +434,6 @@ def generate_response(user_input, chat_id, user_id=None, username=None):
         response = client.models.generate_content(
             model="gemini-2.5-flash-001",
             contents=prompt,
-            enable_cached_context=True
         )
         
         # Log estimated token usage for output
@@ -733,7 +731,6 @@ def generate_conversation_summary(chat_id):
         response = client.models.generate_content(
             model="gemini-2.5-flash-001",
             contents=summary_prompt,
-            enable_cached_context=True
         )
         
         summary = response.text.strip()
@@ -905,7 +902,6 @@ def should_send_followup_message(chat_id, user_id, previous_response):
         response = client.models.generate_content(
             model="gemini-2.5-flash-001",
             contents=prompt,
-            enable_cached_context=True
         )
         
         # Log token usage for analysis response
@@ -956,7 +952,6 @@ def generate_followup_message(chat_id, user_id, username, previous_response):
         response = client.models.generate_content(
             model="gemini-2.5-flash-001",
             contents=prompt,
-            enable_cached_context=True
         )
         
         followup = response.text.strip()
