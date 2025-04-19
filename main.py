@@ -8,6 +8,9 @@ from google import genai
 from personality import PERSONALITY
 from context_manager import ContextManager
 from scheduled_messages import ScheduledMessenger
+import time
+from datetime import datetime, timedelta
+from collections import defaultdict
 
 app = Flask(__name__)
 
@@ -17,9 +20,21 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
 # Load configuration
 def load_config():
+    global message_batches, MESSAGE_BATCH_TIMEOUT
     try:
         with open('config.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
+            config = json.load(f)
+            
+            # Load message batching settings
+            message_batching = config.get("message_batching", {})
+            if message_batching.get("enabled", True):
+                MESSAGE_BATCH_TIMEOUT = message_batching.get("timeout_seconds", 2)
+                print(f"Message batching enabled with timeout of {MESSAGE_BATCH_TIMEOUT} seconds")
+            else:
+                MESSAGE_BATCH_TIMEOUT = 0
+                print("Message batching disabled")
+                
+            return config
     except Exception as e:
         print(f"Error loading config: {str(e)}")
         return {
@@ -73,6 +88,10 @@ else:
 # Configure Gemini
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# Message batching system to handle multiple messages at once (for forwarded messages etc.)
+message_batches = {}
+MESSAGE_BATCH_TIMEOUT = 2  # seconds to wait for more messages
+
 def send_message(chat_id, text):
     """Send message to Telegram chat"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -84,14 +103,24 @@ def send_message(chat_id, text):
     response = requests.post(url, json=payload)
     return response.json()
 
-def send_typing_action(chat_id):
-    """Send typing action to Telegram chat to show 'Анна печатает...'"""
+def send_typing_action(chat_id, message_text=None):
+    """
+    Send typing action to Telegram chat to show 'Анна печатает...'
+    If message_text is provided, simulates typing time based on message length
+    """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendChatAction"
     payload = {
         "chat_id": chat_id,
         "action": "typing"
     }
     response = requests.post(url, json=payload)
+    
+    # If message text is provided, calculate typing duration
+    if message_text:
+        # Calculate typing time: 30ms per character with min/max bounds
+        typing_seconds = min(max(len(message_text) * 0.03, 1), 7)
+        time.sleep(typing_seconds)
+        
     return response.json()
 
 def generate_user_impression(username, message_count, message_sample, existing_impression=""):
@@ -107,7 +136,7 @@ def generate_user_impression(username, message_count, message_sample, existing_i
 і загальній манері їхньої поведінки в чаті. Це повинно бути короткою замальовкою, як ти сприймаєш цю людину через призму свого характеру.
 
 Напиши це так, як ніби говориш сама із собою про людину, яку знаєш по чату. Використовуй свою звичайну манеру спілкування.
-Результат має бути від першої особи (як ти сприймаєш цю людину), довжиною не більше 5 речень.
+Результат має бути від першої особи (як ти сприймаєш цю людину), довжиною не більше 8 речень.
 
 """
     
@@ -505,6 +534,7 @@ def handle_schedule_command(chat_id, command_text):
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming webhook from Telegram"""
+    global message_batches
     data = request.get_json()
     
     # Check if this is a message update
@@ -513,6 +543,7 @@ def webhook():
         user_id = data['message'].get('from', {}).get('id')
         username = data['message'].get('from', {}).get('username', '')
         user_input = data['message']['text']
+        message_id = data['message'].get('message_id', 0)
         
         # Check if message is in a group
         is_group = data['message']['chat']['type'] in ['group', 'supergroup']
@@ -585,12 +616,72 @@ def webhook():
             if command_found:
                 return jsonify({"status": "ok"})
             
+            # Check if message contains a keyword or if it's a forced response
+            keyword_match = should_respond(user_input) or should_force_respond
+            
+            # Create batch key for chat+user combination
+            batch_key = f"{chat_id}:{user_id}"
+            current_time = time.time()
+            
+            # If this is a message with a keyword, check batching
+            if keyword_match and MESSAGE_BATCH_TIMEOUT > 0:  # Only batch if enabled
+                # Add to batch if there's an active batch for this user in this chat
+                if batch_key in message_batches and current_time - message_batches[batch_key]['last_update'] < MESSAGE_BATCH_TIMEOUT:
+                    # Add to existing batch
+                    message_batches[batch_key]['messages'].append(user_input)
+                    message_batches[batch_key]['message_ids'].append(message_id)
+                    message_batches[batch_key]['last_update'] = current_time
+                    # Return immediately to let more messages accumulate if they're coming
+                    return jsonify({"status": "ok", "action": "batched"})
+                else:
+                    # Create new batch
+                    message_batches[batch_key] = {
+                        'messages': [user_input],
+                        'message_ids': [message_id],
+                        'username': username,
+                        'is_group': is_group,
+                        'created': current_time,
+                        'last_update': current_time
+                    }
+                    
+                    # Wait for potential additional messages
+                    time.sleep(MESSAGE_BATCH_TIMEOUT)
+                    
+                    # Get all messages in batch
+                    batched_messages = message_batches[batch_key]['messages']
+                    
+                    # Clean up the batch
+                    del message_batches[batch_key]
+                    
+                    # Check if session already exists or create one for group chats
+                    if is_group and group_settings.get("session_enabled", True):
+                        if not context_manager.is_session_active(chat_id):
+                            # Start a new session
+                            context_manager.start_session(chat_id, user_id, username)
+                        else:
+                            # Update existing session
+                            context_manager.update_session(chat_id, user_id, username)
+                    
+                    # If we have multiple messages, combine them for a single response
+                    if len(batched_messages) > 1:
+                        combined_input = "Користувач переслав кілька повідомлень:\n\n" + "\n".join([f"- {msg}" for msg in batched_messages])
+                        response_text = generate_response(combined_input, chat_id)
+                        
+                        # Send typing action with message length for dynamic typing duration
+                        send_typing_action(chat_id, response_text)
+                        
+                        send_message(chat_id, response_text)
+                        
+                        # Add bot response to context
+                        context_manager.add_message(chat_id, None, CONFIG["bot_name"], response_text, is_bot=True, is_group=is_group)
+                        
+                        return jsonify({"status": "ok", "action": "batch_processed"})
+                    else:
+                        # Single message processing continues with normal flow
+                        user_input = batched_messages[0]
+            
             # Group chat session handling
             if is_group and group_settings.get("session_enabled", True):
-                # Check if this is a message that should trigger a response
-                # (contains keyword or is a reply to bot's message)
-                keyword_match = should_respond(user_input) or should_force_respond
-                
                 # If message matches a keyword or is a reply to bot, start a new session or update existing one
                 if keyword_match:
                     # Check if there's already an active session
@@ -604,10 +695,8 @@ def webhook():
                     # Generate response
                     response_text = generate_response(user_input, chat_id)
                     
-                    # Send typing action and add random delay (1-3 seconds)
-                    send_typing_action(chat_id)
-                    import time
-                    time.sleep(random.uniform(2, 6))
+                    # Send typing action with message length for dynamic typing duration
+                    send_typing_action(chat_id, response_text)
                     
                     send_message(chat_id, response_text)
                     
@@ -634,10 +723,8 @@ def webhook():
                         # Generate response
                         response_text = generate_response(user_input, chat_id)
                         
-                        # Send typing action and add random delay (1-3 seconds)
-                        send_typing_action(chat_id)
-                        import time
-                        time.sleep(random.uniform(1, 3))
+                        # Send typing action with message length for dynamic typing duration
+                        send_typing_action(chat_id, response_text)
                         
                         send_message(chat_id, response_text)
                         
@@ -656,14 +743,12 @@ def webhook():
             
             # If not a group chat or sessions disabled, check if should respond
             if not is_group or not group_settings.get("session_enabled", True):
-                if should_respond(user_input) or should_force_respond:
+                if keyword_match:
                     # Generate response
                     response_text = generate_response(user_input, chat_id)
                     
-                    # Send typing action and add random delay (1-3 seconds)
-                    send_typing_action(chat_id)
-                    import time
-                    time.sleep(random.uniform(1, 3))
+                    # Send typing action with message length for dynamic typing duration
+                    send_typing_action(chat_id, response_text)
                     
                     send_message(chat_id, response_text)
                     

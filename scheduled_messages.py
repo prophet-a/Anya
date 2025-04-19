@@ -215,8 +215,10 @@ class ScheduledMessenger:
         try:
             requests.post(typing_url, json=typing_payload)
             
-            # Add random delay between 1-3 seconds to simulate typing
-            time.sleep(random.uniform(1, 3))
+            # Calculate typing time based on message length
+            # 30ms per character with min/max bounds
+            typing_seconds = min(max(len(text) * 0.03, 1), 7)
+            time.sleep(typing_seconds)
         except Exception as e:
             print(f"Error sending typing action: {str(e)}")
         

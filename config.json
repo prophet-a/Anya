@@ -58,6 +58,11 @@
     "auto_reply_to_session_participants": true,
     "include_reply_context": true
   },
+  "message_batching": {
+    "enabled": true,
+    "timeout_seconds": 2,
+    "combine_forwarded_messages": true
+  },
   "scheduled_messages": {
     "enabled": true,
     "min_hours_between_messages": 4,
