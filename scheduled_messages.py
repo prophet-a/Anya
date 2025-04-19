@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timedelta
 import requests
 from google import genai
-from google.api_core.client_options import HttpOptions
+# from google.api_core.client_options import HttpOptions
 from personality import PERSONALITY
 
 class ScheduledMessenger:
@@ -49,7 +49,7 @@ class ScheduledMessenger:
         # Initialize Gemini
         self.client = genai.Client(
             api_key=gemini_api_key,
-            http_options=HttpOptions(api_version="v1")
+            # http_options=HttpOptions(api_version=\"v1\")
         )
         
         # Load config
